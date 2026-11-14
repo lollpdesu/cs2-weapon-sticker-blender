@@ -97,4 +97,4 @@ These parts can't be reproduced one-to-one in Blender:
 
 ## License
 
-GPL-3.0-or-later, see [LICENSE](LICENSE). The bundled SourceIO subset in `cs2_weapon_sticker/sourceio/` keeps its MIT license.
+MIT, see [LICENSE](LICENSE). The bundled SourceIO subset in `cs2_weapon_sticker/sourceio/` is also MIT licensed, by REDxEYE (see its own LICENSE file).
