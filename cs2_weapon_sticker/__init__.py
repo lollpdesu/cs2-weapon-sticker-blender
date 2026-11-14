@@ -1,7 +1,7 @@
 bl_info = {
     "name": "CS2 Weapon Sticker Shader",
     "author": "Lollp",
-    "version": (1, 0, 0),
+    "version": (1, 0, 1),
     "blender": (4, 2, 0),
     "location": "Properties > Material > CS2 Weapon Sticker, 3D Viewport > Sidebar > CS2 Sticker",
     "description": "Node-based recreation of the CS2 csgo_weapon_sticker shader, with a browser that imports stickers straight from the game",
@@ -31,7 +31,6 @@ class Slot:
 
 
 SLOTS = [
-    Slot("tex_normal", "Base Normal", ["IMG_Normal"], 'Non-Color', "normal_std", hemi_default="normal_hemi"),
     Slot("tex_rough", "Base Roughness", ["IMG_Rough"], 'Non-Color', "rough_base"),
     Slot("tex_sticker", "Sticker Color", ["IMG_Sticker"], 'sRGB', "clear"),
     Slot("tex_wear_mask", "Wear Mask (empty = sticker alpha)", ["IMG_WearMask", "IMG_WearMaskEdge"], 'Non-Color', None),
@@ -180,7 +179,6 @@ def apply_normal_format(mat):
     if node is not None:
         node.inputs["Standard Normal Maps"].default_value = 0.0 if _uses_hemi(s) else 1.0
         node.inputs["DirectX Normals"].default_value = 1.0 if s.normal_format == 'DIRECTX' else 0.0
-    assign_slot(mat, "tex_normal")
     assign_slot(mat, "tex_sticker_nr")
 
 
@@ -243,6 +241,9 @@ def _poll_light(self, obj):
 _ann = {}
 for _slot in SLOTS:
     _ann[_slot.prop] = PointerProperty(name=_slot.label, type=bpy.types.Image, update=_upd_slot(_slot.prop))
+# Up to 1.0.0 the base (weapon) normal map was a texture slot. It is now the group's "Base Normal"
+# input; this property is kept only so older files can be migrated (see _migrate_base_normal).
+_ann["tex_normal"] = PointerProperty(type=bpy.types.Image)
 _ann["normal_format"] = EnumProperty(
     name="Normal Format",
     items=[
@@ -343,7 +344,32 @@ def setup_material(mat, scene=None):
     assign_all_slots(mat)
     apply_normal_format(mat)
     apply_sun_driver(mat)
+    _migrate_base_normal(mat, node)
     return node
+
+
+def _migrate_base_normal(mat, node):
+    """Move a base normal map from the old texture slot to an Image Texture node on the "Base Normal" input."""
+    s = mat.cs2_sticker
+    img = s.tex_normal
+    sock = node.inputs.get("Base Normal")
+    if img is None or sock is None:
+        return
+    nt = mat.node_tree
+    if not sock.is_linked:
+        tex = nt.nodes.new("ShaderNodeTexImage")
+        tex.label = "Base Normal"
+        tex.image = img
+        _set_colorspace(img, "Non-Color")
+        tex.location = (node.location.x - 300, node.location.y - 260)
+        uv_link = next((l for l in nt.links if l.to_node == node and l.to_socket.name == "UV"), None)
+        if uv_link is not None:
+            nt.links.new(uv_link.from_socket, tex.inputs["Vector"])
+        nt.links.new(tex.outputs["Color"], sock)
+        # the old slot used the material's normal format
+        node.inputs["Base Normal Hemi-Oct"].default_value = 1.0 if s.normal_format == 'HEMIOCT' else 0.0
+        node.inputs["Base Normal DirectX"].default_value = 1.0 if s.normal_format == 'DIRECTX' else 0.0
+    s.tex_normal = None
 
 
 # ====================================================================== operators
@@ -419,6 +445,7 @@ SECTIONS = [
                        "Legacy Tint Multiply", "Color Boost", "Metallic"]),
     ("SFX", ["Holographic", "Clamp Spectrum V", "SFX Color Boost", "Glitter", "Glitter Scale", "Self Illum"]),
     ("Wear", ["Wear", "Wear Bias X", "Wear Bias Y", "Wear Scratches", "Paper Backing", "Preserve Roughness"]),
+    ("Base Weapon", ["Base Normal", "Base Normal Hemi-Oct", "Base Normal DirectX"]),
 ]
 
 

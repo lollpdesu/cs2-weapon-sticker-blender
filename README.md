@@ -55,7 +55,6 @@ Each mask and roughness map has its own slot. Grayscale masks are read from the 
 
 | Slot | Shader source | If left empty |
 |---|---|---|
-| Base Normal | `g_tNormal` RG | flat |
 | Base Roughness | `g_tNormal` B | 0.5 |
 | Sticker Color | `g_tSticker0` RGB (sRGB) | no sticker |
 | Wear Mask | `g_tSticker0` A (also the sticker's coverage) | the Sticker Color image's alpha |
@@ -71,7 +70,16 @@ Each mask and roughness map has its own slot. Grayscale masks are read from the 
 
 The compiled `g_tSfxMaskSticker0` alpha stores the glitter mask inverted (black = glitter). If your glitter mask comes from that channel, turn on **Invert Glitter Mask** under its slot.
 
-If your normal maps are regular RGB normal maps rather than raw hemi-octahedral RG, set **Normal Format** to *Standard RGB*.
+If your sticker normal maps are regular RGB normal maps rather than raw hemi-octahedral RG, set **Normal Format** to *Standard RGB*.
+
+### Weapon normal map (Base Weapon)
+
+The normal map of the weapon under the sticker (`g_tNormal`) is a node input: open the group node's **Base Weapon** panel and connect an Image Texture (set to *Non-Color*) to **Base Normal**, sampled with the weapon's UV. The sticker's own normal is built on top of it, so bumps and scratches in the weapon surface show through the sticker. Left unconnected, the surface is flat.
+
+* **Base Normal Hemi-Oct**: turn on for a raw compiled CS2 normal map (hemi-octahedral RG), leave off for a regular RGB normal map.
+* **Base Normal DirectX**: turn on for DirectX-style RGB normal maps (flipped green).
+
+This is independent of the sticker's **Normal Format**. Files from 1.0.0 that had a texture in the old *Base Normal* slot are converted automatically when opened.
 
 The material is transparent everywhere the sticker isn't drawn, including worn-away areas, so the plane works as a decal. The holo spectrum's sun direction comes from the **Sun** picker in the panel, through a driver on a node inside the group. Without a sun set, it points mostly straight up.
 

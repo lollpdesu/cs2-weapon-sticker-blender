@@ -18,7 +18,7 @@ Conventions
 import math
 import bpy
 
-VERSION = 10
+VERSION = 11
 
 LUM = (0.2125000059604645, 0.7153999805450439, 0.07209999859333038)
 HEMI_BIAS = 1.00392162799835205078125  # 256/255
@@ -432,6 +432,13 @@ INPUTS = [
     ("Wear", "Wear Scratches", 'NodeSocketFloat', 1.0, 0.0, 1.0, "g_fWearScratchesSticker0"),
     ("Wear", "Paper Backing", 'NodeSocketFloat', 0.0, 0.0, 1.0, "g_bPaperBackingSticker0"),
     ("Wear", "Preserve Roughness", 'NodeSocketFloat', 0.0, 0.0, 1.0, "g_bPreserveRoughnessSticker0"),
+    ("Base Weapon", "Base Normal", 'NodeSocketColor', (0.5, 0.5, 1.0, 1.0), None, None,
+     "Normal map of the weapon under the sticker (g_tNormal). Connect an Image Texture set to Non-Color, "
+     "sampled with the weapon's UV. Left empty, the surface is flat"),
+    ("Base Weapon", "Base Normal Hemi-Oct", 'NodeSocketFloat', 0.0, 0.0, 1.0,
+     "1 = raw compiled Source 2 normal (hemi-octahedral RG), 0 = regular RGB normal map"),
+    ("Base Weapon", "Base Normal DirectX", 'NodeSocketFloat', 0.0, 0.0, 1.0,
+     "Flip green for DirectX-style RGB normal maps"),
     ("Advanced", "Standard Normal Maps", 'NodeSocketFloat', 0.0, 0.0, 1.0, "0 = raw Source 2 hemi-octahedral RG, 1 = regular RGB normal maps"),
     ("Advanced", "DirectX Normals", 'NodeSocketFloat', 0.0, 0.0, 1.0, "Flip green for standard DirectX-style normal maps"),
     ("Advanced", "Invert Glitter Mask", 'NodeSocketFloat', 0.0, 0.0, 1.0, "Glitter mask is stored inverted (compiled g_tSfxMaskSticker0 alpha: black = glitter)"),
@@ -442,7 +449,7 @@ FLAG_INPUTS = {
     "Enable Sticker", "Automatic PBR Color Fitting", "Legacy Tint Multiply", "Metallic",
     "Holographic", "Clamp Spectrum V", "Glitter", "Self Illum", "Paper Backing",
     "Preserve Roughness", "Standard Normal Maps", "DirectX Normals",
-    "Invert Glitter Mask", "Wear Mask From Sticker Alpha",
+    "Invert Glitter Mask", "Wear Mask From Sticker Alpha", "Base Normal Hemi-Oct", "Base Normal DirectX",
 }
 
 OUTPUTS = [
@@ -515,12 +522,16 @@ def build_main_group(g):
         return b.sep(color)[0]
 
     # ------------------------------------------------------------------ base layer
-    Nc, _ = b.image("IMG_Normal", "Base Normal (g_tNormal RG)", uv)
+    # The weapon normal map (g_tNormal) comes in through the "Base Normal" input, so it can be
+    # sampled with the weapon's own UV in the material. Its format is set separately from the sticker's.
+    Nc = I("Base Normal")
+    std_base = b.sub(1.0, I("Base Normal Hemi-Oct"))
+    dx_base = I("Base Normal DirectX")
     Rc, _ = b.image("IMG_Rough", "Base Roughness (g_tNormal B)", uv)
     # base color / metalness / tint are fixed to the shader defaults; AO is not used
     M = 0.0                                                   # _18169 (g_tMetalness default)
     rough_base = rough_of(Rc)                                  # _12835
-    n_base_raw = decode(Nc, std, dx)                           # _18354
+    n_base_raw = decode(Nc, std_base, dx_base)                 # _18354
     w_base = b.flip_y(n_base_raw)                              # _20480
     albedo0 = (1.0, 1.0, 1.0)                                  # _23987 (g_tColor default * white tint)
     N_base_world = b.normal_map(n_base_raw)                    # _15878
