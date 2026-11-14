@@ -5,9 +5,11 @@ A node-based recreation of the CS2 `csgo_weapon_sticker` ("CSGO Weapon Sticker P
 ## Install
 
 1. Download `cs2_weapon_sticker.zip` from the [latest release](https://github.com/lollpdesu/cs2-weapon-sticker-blender/releases/latest).
-2. Blender 4.2 or newer: **Edit > Preferences > Get Extensions > ⌄ > Install from Disk…** and pick the zip.
+2. Blender 4.2 or newer: **Edit > Preferences > Add-ons > ⌄ (top right) > Install from Disk…** and pick the zip.
 
 When updating, restart Blender before installing the new zip: Windows keeps the add-on's helper library (`pylib.pyd`) locked while it is loaded.
+
+To remove it, open the add-on's preferences (**Edit > Preferences > Add-ons > CS2 Weapon Sticker Shader**) and click **Uninstall Add-on**. Your .blend files and their sticker materials are kept. On Windows, restart Blender afterwards to finish removing the helper library.
 
 Tested on Windows with Blender 5.1. The helper library is included for Linux and macOS as well, but those platforms have not been tested yet.
 

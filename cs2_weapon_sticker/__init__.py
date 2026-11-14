@@ -1,7 +1,7 @@
 bl_info = {
     "name": "CS2 Weapon Sticker Shader",
     "author": "Lollp",
-    "version": (1, 4, 2),
+    "version": (1, 0, 0),
     "blender": (4, 2, 0),
     "location": "Properties > Material > CS2 Weapon Sticker, 3D Viewport > Sidebar > CS2 Sticker",
     "description": "Node-based recreation of the CS2 csgo_weapon_sticker shader, with a browser that imports stickers straight from the game",

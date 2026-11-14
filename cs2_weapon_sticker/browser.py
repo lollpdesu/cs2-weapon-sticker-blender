@@ -1,5 +1,6 @@
 """CS2 sticker browser: pick a sticker from the game files and import it with the sticker shader."""
 
+import functools
 import json
 import os
 import time
@@ -39,6 +40,62 @@ class CS2STICKER_OT_detect_cs2(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class CS2STICKER_OT_uninstall(bpy.types.Operator):
+    bl_idname = "cs2sticker.uninstall"
+    bl_label = "Uninstall CS2 Weapon Sticker Shader"
+    bl_description = ("Remove this add-on from Blender. Your .blend files and the sticker materials in them "
+                      "are not touched")
+
+    remove_cache: BoolProperty(
+        name="Also delete the cached sticker list and textures", default=True,
+        description="Delete the add-on's cache folder (sticker list, thumbnails, decoded textures)",
+    )
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self, width=380, title="Uninstall CS2 Weapon Sticker Shader?",
+                                                          confirm_text="Uninstall")
+
+    def draw(self, context):
+        col = self.layout.column()
+        col.label(text="The add-on will be disabled and removed.")
+        col.label(text="Your .blend files and their sticker materials stay as they are.")
+        col.prop(self, "remove_cache")
+
+    def execute(self, context):
+        # Uninstalling unregisters this operator class. Doing it inside execute() would leave
+        # Blender running a freed operator, so it runs from a timer after this operator has finished.
+        bpy.app.timers.register(functools.partial(_uninstall_now, bool(self.remove_cache)), first_interval=0.1)
+        self.report({'INFO'}, "Uninstalling CS2 Weapon Sticker Shader…")
+        return {'FINISHED'}
+
+
+def _uninstall_now(remove_cache):
+    """Remove the add-on (runs from a timer, outside any operator of this add-on)."""
+    import shutil
+    addon_id = ADDON_ID
+    if remove_cache:
+        try:
+            shutil.rmtree(bpy.utils.extension_path_user(addon_id), ignore_errors=True)
+        except Exception:
+            pass
+    parts = addon_id.split(".")
+    try:
+        if len(parts) == 3 and parts[0] == "bl_ext":
+            repo_module, pkg_id = parts[1], parts[2]
+            repos = list(bpy.context.preferences.extensions.repos)
+            index = next((i for i, r in enumerate(repos) if r.module == repo_module), None)
+            if index is None:
+                raise RuntimeError("extension repository '%s' not found" % repo_module)
+            bpy.ops.extensions.package_uninstall(repo_index=index, pkg_id=pkg_id)
+        else:  # installed as a legacy add-on
+            bpy.ops.preferences.addon_disable(module=addon_id)
+            bpy.ops.preferences.addon_remove(module=addon_id)
+        print("CS2 Weapon Sticker Shader was uninstalled. Restart Blender to finish removing its files.")
+    except Exception as e:
+        print("CS2 Weapon Sticker Shader: uninstall failed:", e)
+    return None
+
+
 class CS2STICKER_Preferences(bpy.types.AddonPreferences):
     bl_idname = ADDON_ID
 
@@ -62,6 +119,10 @@ class CS2STICKER_Preferences(bpy.types.AddonPreferences):
             layout.label(text="pak01_dir.vpk found" if ok else "pak01_dir.vpk not found in this folder",
                          icon='CHECKMARK' if ok else 'ERROR')
         layout.prop(self, "auto_update")
+        layout.separator()
+        row = layout.row()
+        row.alert = True
+        row.operator(CS2STICKER_OT_uninstall.bl_idname, text="Uninstall Add-on", icon='TRASH')
 
 
 def cs2_root(context=None):
@@ -738,6 +799,7 @@ def _short(name, n=22):
 
 classes = [
     CS2STICKER_OT_detect_cs2,
+    CS2STICKER_OT_uninstall,
     CS2STICKER_Preferences,
     CS2StickerBrowserState,
     CS2STICKER_OT_load_index,
