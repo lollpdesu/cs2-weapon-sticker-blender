@@ -25,7 +25,10 @@ Imports any sticker straight from your Counter-Strike 2 install, with its textur
 2. The sticker list loads by itself a moment after Blender starts. The first time it reads `items_game.txt` and the English names (about 1 second). After that it comes from a cache.
    * **Automatic updates:** once a minute the add-on checks whether a CS2 update changed the game files. If so, it rebuilds the list in the background. Stickers added by the update are shown in a banner and under **Collection > New in Latest CS2 Update**. You can turn this off in the add-on preferences (**Update Sticker List Automatically**); the refresh button at the bottom of the panel rebuilds the list by hand.
 3. Search by name, team, player or tournament, and filter by **Collection** and **Type** (Paper, Glitter, Holo, Foil, Gold, Lenticular, Embroidered). Thumbnails are the game's own preview images.
-4. Click a sticker, choose **Import To** (*New Plane* with the sticker's aspect ratio at the 3D cursor, or *Selected Objects*), set an initial **Wear**, and click **Import Sticker**.
+4. Click a sticker, choose **Import To**, set an initial **Wear**, and click **Import Sticker**:
+   * *New Plane*: a plane with the sticker's aspect ratio at the 3D cursor.
+   * *Selected Objects*: the sticker material on the selected objects' active slot, using their own UVs (legacy CS:GO sticker meshes).
+   * *Weapon (CS2 Model)*: the sticker layered into a sticker slot of the active weapon's own material, see below.
 
 What the import does:
 
@@ -35,6 +38,32 @@ What the import does:
 * Wear is not part of the material (in-game it belongs to the item), so it uses the value you set before importing.
 
 Sprays (graffiti) and stickers without a sticker material are not listed.
+
+### Stickers on CS2 weapon models
+
+Legacy CS:GO models carry a separate sticker mesh with its own UVs. CS2 models don't: the sticker is placed on the weapon's second UV map (`TEXCOORD_1`), at a fixed position per weapon and slot, and a sticker mask on the weapon limits where stickers may appear.
+
+1. Select the weapon model and set **Import To** to *Weapon (CS2 Model)*.
+2. **Weapon**: *Detect from Object Name* recognizes the CS2 name in the object, mesh or material name (for example `weapon_snip_awp`); otherwise pick the weapon. 34 weapons are included.
+3. **Slot**: 1 to 5, depending on the weapon. **UV Map**: empty uses the second UV map (or the first if there is only one).
+4. **Import Sticker**. Repeat for the other slots; importing into a slot that is already used replaces that sticker.
+
+No new material or object is created. The sticker goes into the weapon's own (active) material, in one **CS2 Weapon Stickers** node between the weapon's shader and the Material Output:
+
+* **BSDF**: the weapon's shader (wired automatically); the stickers are drawn over it.
+* **Mask**: the weapon's sticker mask. The add-on loads `weapons/models/<weapon>/materials/stickers/*_sticker_mask_hd` from the game and connects its red channel, sampled with the weapon's first UV map.
+* **NormalMap**: connect the weapon's normal map here (Image Texture, Non-Color) so the stickers follow its bumps.
+
+Inside the group, every slot is its own sticker group (*Slot 1 | …*, *Slot 2 | …*), chained in slot order. Press **Tab** on the node to open it and change a sticker's settings, for example its **Wear**, on its slot node.
+
+The placement is set on each slot node in its **Sticker Placement** panel and can be changed afterwards:
+
+* **UV Placement**: on for CS2 models; off (the default) uses the Sticker UV as is, for planes and legacy sticker meshes.
+* **Slot X / Slot Y**: offset of the sticker's center from the middle of the UV map (Y negative = towards the top, as in CS2).
+* **Slot Scale**: how many times smaller than the whole UV map the sticker is.
+* **Rotation**: extra rotation in degrees, counter-clockwise.
+
+The sticker UV is `(uv - (0.5 + X, 0.5 - Y)) * Scale + 0.5`, rotated around the sticker's center.
 
 ## Use
 
@@ -101,6 +130,7 @@ These parts can't be reproduced one-to-one in Blender:
 
 * Reading the game files uses a small part of **[SourceIO](https://github.com/REDxEYE/SourceIO)** by REDxEYE (MIT License, see `cs2_weapon_sticker/sourceio/LICENSE`): its native helper library (VPK reader, BCn texture decoding, LZ4/Zstd) and its binary KeyValues3 reader.
 * File layouts follow **[ValveResourceFormat / Source 2 Viewer](https://github.com/ValveResourceFormat/ValveResourceFormat)** (MIT License).
+* The sticker slot positions per weapon come from `sticker_offsets_db.csv` in **[KeisariKine/cs2-stickers-blender](https://github.com/KeisariKine/cs2-stickers-blender)**.
 * Not affiliated with or endorsed by Valve. Counter-Strike and CS2 are trademarks of Valve Corporation. The add-on reads your own game install; no game files are included.
 
 ## License

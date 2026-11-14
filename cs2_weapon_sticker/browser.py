@@ -12,6 +12,7 @@ from bpy.props import (BoolProperty, EnumProperty, FloatProperty, IntProperty, P
 
 from . import cs2data as cd
 from . import nodes_build as nb
+from . import weapon_slots as ws
 
 ADDON_ID = __package__
 PANEL_CATEGORY = "CS2 Sticker"
@@ -327,6 +328,37 @@ def _collection_items(self, context):
     return _COLLECTION_ITEMS
 
 
+_WEAPON_ITEMS = [("AUTO", "Detect from Object Name", "Use the weapon whose CS2 name (e.g. awp, ak47) is in the object, "
+                                                    "mesh or material name")] + [
+    (key, disp, "%d sticker slots" % len(slots))
+    for key, (disp, _aliases, slots) in sorted(ws.WEAPONS.items(), key=lambda kv: kv[1][0].lower())]
+
+
+def _weapon_items(self, context):
+    return _WEAPON_ITEMS
+
+
+def weapon_for(state, obj):
+    """Weapon key for the import: the chosen one, or detected from the object's names."""
+    if state.weapon != "AUTO":
+        return state.weapon
+    if obj is None:
+        return None
+    names = [obj.name, getattr(obj.data, "name", "")]
+    names += [m.name for m in getattr(obj.data, "materials", []) if m is not None]
+    return ws.detect_weapon(*names)
+
+
+def sticker_uv_name(state, obj):
+    """UV map for sticker placement: the chosen one, else the second, else the first."""
+    layers = obj.data.uv_layers
+    if state.uv_map and state.uv_map in layers:
+        return state.uv_map
+    if len(layers) >= 2:
+        return layers[1].name
+    return layers[0].name if len(layers) else ""
+
+
 def _reset_page(self, context):
     self.page = 0
 
@@ -346,10 +378,19 @@ class CS2StickerBrowserState(bpy.types.PropertyGroup):
     target: EnumProperty(
         name="Import To",
         items=[('PLANE', "New Plane", "Create a plane with the sticker's aspect ratio"),
-               ('SELECTED', "Selected Objects", "Assign the sticker material to the active slot of the selected objects")],
+               ('SELECTED', "Selected Objects", "Assign the sticker material to the active slot of the selected objects "
+                                                "(legacy CS:GO sticker meshes, or your own UVs)"),
+               ('WEAPON', "Weapon (CS2 Model)", "Layer the sticker into a sticker slot of the active weapon's material, "
+                                                "placed on its UV map like CS2 models do")],
         default='PLANE')
     plane_size: FloatProperty(name="Plane Size", default=1.0, min=0.001, soft_max=10.0, unit='LENGTH',
                               description="Length of the plane's longer side")
+    weapon: EnumProperty(name="Weapon", items=_weapon_items,
+                         description="Which weapon's sticker slot positions to use")
+    slot: IntProperty(name="Slot", min=1, max=5, default=1, description="Sticker slot (1 to 5, depending on the weapon)")
+    uv_map: StringProperty(name="UV Map",
+                           description="UV map the stickers are placed on. CS2 models use the second UV map "
+                                       "(TEXCOORD_1). Empty: the second UV map, or the first if there is only one")
     wear: FloatProperty(name="Wear", default=0.0, min=0.0, max=1.0, subtype='FACTOR',
                         description="Initial sticker wear (g_flSticker0Wear). Not stored in the material; set per item in-game")
 
@@ -554,11 +595,11 @@ def _socket_for_params():
     return out
 
 
-def import_sticker(context, sticker, state):
-    """Create a material for `sticker` ([id, name, material, collection, type]) and return it."""
-    from . import setup_material, assign_slot, find_group_node, refresh_wear_mask
+def load_sticker(context, sticker):
+    """Read a sticker's compiled material and decode its textures.
 
-    sid, display, mat_path, _coll, _typ = sticker
+    Returns (vmat, images {slot prop: Image}, aspect ratio of the sticker texture)."""
+    _sid, _display, mat_path, _coll, _typ = sticker
     game = cd.Game.open(cs2_root(context))
     raw = game.read(cd.material_path(mat_path))
     if raw is None:
@@ -566,22 +607,7 @@ def import_sticker(context, sticker, state):
     vmat = cd.read_material(raw)
     if vmat["shader"] and "csgo_weapon_sticker" not in vmat["shader"]:
         print("CS2 sticker import: %s uses shader %s" % (mat_path, vmat["shader"]))
-
-    mat = bpy.data.materials.new("CS2 Sticker | %s" % display)
-    try:
-        mat.use_nodes = True
-    except AttributeError:
-        pass
-    for n in list(mat.node_tree.nodes):
-        if n.bl_idname != 'ShaderNodeOutputMaterial':
-            mat.node_tree.nodes.remove(n)
-    node = setup_material(mat, context.scene)
-    mat["cs2_sticker_id"] = sid
-    mat["cs2_sticker_material"] = mat_path
-
-    # ---- textures
-    s = mat.cs2_sticker
-    aspect = 1.0
+    images, aspect = {}, 1.0
     for param, targets in TEXTURE_MAP:
         vtex = vmat["textures"].get(param)
         if not vtex:
@@ -599,12 +625,14 @@ def import_sticker(context, sticker, state):
             else:
                 img = _make_image(_image_name(vtex, " %s" % "RGBA"[channel]),
                                   np.ascontiguousarray(arr[..., channel]), colorspace)
-            setattr(s, prop, img)
-    if s.tex_glitter_mask is not None and "Invert Glitter Mask" in node.inputs:
-        node.inputs["Invert Glitter Mask"].default_value = 1.0  # compiled alpha: black = glitter
-    refresh_wear_mask(mat)
+            images[prop] = img
+    return vmat, images, aspect
 
-    # ---- parameters
+
+def apply_material_values(node, vmat, images, wear):
+    """Set the sticker group node's inputs from the compiled material (anything not set keeps the default)."""
+    if images.get("tex_glitter_mask") is not None and "Invert Glitter Mask" in node.inputs:
+        node.inputs["Invert Glitter Mask"].default_value = 1.0  # compiled alpha: black = glitter
     values = {}
     for group in ("ints", "floats", "vectors"):
         values.update(vmat[group])
@@ -629,7 +657,31 @@ def import_sticker(context, sticker, state):
             except (TypeError, ValueError, IndexError):
                 pass
     if "Wear" in node.inputs:
-        node.inputs["Wear"].default_value = state.wear
+        node.inputs["Wear"].default_value = wear
+
+
+def import_sticker(context, sticker, state):
+    """Create a material for `sticker` ([id, name, material, collection, type]) and return it."""
+    from . import setup_material, refresh_wear_mask
+
+    sid, display, mat_path, _coll, _typ = sticker
+    vmat, images, aspect = load_sticker(context, sticker)
+    mat = bpy.data.materials.new("CS2 Sticker | %s" % display)
+    try:
+        mat.use_nodes = True
+    except AttributeError:
+        pass
+    for n in list(mat.node_tree.nodes):
+        if n.bl_idname != 'ShaderNodeOutputMaterial':
+            mat.node_tree.nodes.remove(n)
+    node = setup_material(mat, context.scene)
+    mat["cs2_sticker_id"] = sid
+    mat["cs2_sticker_material"] = mat_path
+    s = mat.cs2_sticker
+    for prop, img in images.items():
+        setattr(s, prop, img)
+    refresh_wear_mask(mat)
+    apply_material_values(node, vmat, images, state.wear)
     return mat, aspect
 
 
@@ -659,6 +711,21 @@ def _make_plane(context, name, aspect, size):
     return obj
 
 
+MASK_FOLDER = {"glock": "glock18"}   # weapon key -> folder under weapons/models/ where it differs
+
+
+def load_weapon_mask(context, key):
+    """The weapon's sticker mask (red channel of weapons/models/<weapon>/materials/stickers/*_sticker_mask_hd*)
+    as a packed grayscale image, or None if the weapon has none."""
+    game = cd.Game.open(cs2_root(context))
+    folder = MASK_FOLDER.get(key, key)
+    hits = sorted(k for k, _data in game.vpk.glob("weapons/models/%s/materials/stickers/*sticker_mask_hd*" % folder))
+    if not hits:
+        return None
+    arr, _info = cd.read_texture(game.read(hits[0]))
+    return _make_image(_image_name(hits[0], " R"), np.ascontiguousarray(arr[..., 0]), 'Non-Color')
+
+
 class CS2STICKER_OT_import(bpy.types.Operator):
     bl_idname = "cs2sticker.import_sticker"
     bl_label = "Import Sticker"
@@ -681,7 +748,38 @@ class CS2STICKER_OT_import(bpy.types.Operator):
         if st.target == 'SELECTED' and not [o for o in context.selected_objects if hasattr(o.data, "materials")]:
             self.report({'WARNING'}, "Select one or more mesh objects, or import to a new plane")
             return {'CANCELLED'}
+        weapon_obj = key = uv_name = None
+        if st.target == 'WEAPON':
+            weapon_obj = context.active_object
+            if weapon_obj is None or weapon_obj.type != 'MESH':
+                self.report({'WARNING'}, "Select the weapon (a mesh object) first")
+                return {'CANCELLED'}
+            key = weapon_for(st, weapon_obj)
+            if key is None:
+                self.report({'WARNING'}, "Could not tell which weapon '%s' is. Choose it under Weapon" % weapon_obj.name)
+                return {'CANCELLED'}
+            slots = ws.WEAPONS[key][2]
+            if st.slot > len(slots):
+                self.report({'WARNING'}, "The %s has %d sticker slots" % (ws.WEAPONS[key][0], len(slots)))
+                return {'CANCELLED'}
+            uv_name = sticker_uv_name(st, weapon_obj)
+            if not uv_name:
+                self.report({'WARNING'}, "'%s' has no UV map" % weapon_obj.name)
+                return {'CANCELLED'}
         t = time.time()
+        if st.target == 'WEAPON':
+            from . import weapon_layer
+            try:
+                mat, _node, mask = weapon_layer.place_sticker(context, weapon_obj, key, st.slot, uv_name, sticker, st)
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self.report({'ERROR'}, "Import failed: %s" % e)
+                return {'CANCELLED'}
+            self.report({'INFO'}, "%s: slot %d of %s in material '%s'%s (%.1f s)" % (
+                sticker[1], st.slot, ws.WEAPONS[key][0], mat.name,
+                "" if mask else ", no sticker mask found for this weapon", time.time() - t))
+            return {'FINISHED'}
         try:
             mat, aspect = import_sticker(context, sticker, st)
         except Exception as e:
@@ -778,6 +876,24 @@ class CS2STICKER_PT_browser(bpy.types.Panel):
         col.prop(st, "target")
         if st.target == 'PLANE':
             col.prop(st, "plane_size")
+        elif st.target == 'WEAPON':
+            ob = context.active_object
+            col.prop(st, "weapon")
+            key = weapon_for(st, ob) if ob is not None and ob.type == 'MESH' else None
+            n_slots = len(ws.WEAPONS[key][2]) if key else 5
+            col.prop(st, "slot")
+            if ob is not None and ob.type == 'MESH':
+                col.prop_search(st, "uv_map", ob.data, "uv_layers", text="UV Map")
+            info = col.column(align=True)
+            info.scale_y = 0.8
+            if ob is None or ob.type != 'MESH':
+                info.label(text="Select the weapon object", icon='INFO')
+            elif key is None:
+                info.label(text="Weapon not recognized, choose it above", icon='ERROR')
+            else:
+                info.label(text="%s · %d slots · UV map: %s" % (ws.WEAPONS[key][0], n_slots,
+                                                                 sticker_uv_name(st, ob) or "none"),
+                           icon='CHECKMARK' if st.slot <= n_slots else 'ERROR')
         col.prop(st, "wear", slider=True)
         row = box.row()
         row.scale_y = 1.5

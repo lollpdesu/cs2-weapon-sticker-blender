@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "cs2_weapon_sticker"
-version = "1.0.1"
+version = "1.1.0"
 name = "CS2 Weapon Sticker Shader"
 tagline = "CS2 sticker shader recreation with an in-game sticker browser"
 maintainer = "Lollp"

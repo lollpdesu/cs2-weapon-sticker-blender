@@ -1,7 +1,7 @@
 bl_info = {
     "name": "CS2 Weapon Sticker Shader",
     "author": "Lollp",
-    "version": (1, 0, 1),
+    "version": (1, 1, 0),
     "blender": (4, 2, 0),
     "location": "Properties > Material > CS2 Weapon Sticker, 3D Viewport > Sidebar > CS2 Sticker",
     "description": "Node-based recreation of the CS2 csgo_weapon_sticker shader, with a browser that imports stickers straight from the game",
@@ -193,6 +193,11 @@ def apply_sun_driver(mat):
         prefix = 'nodes["%s"].inputs' % node.name
         for fc in [fc for fc in ad.drivers if fc.data_path.startswith(prefix)]:
             ad.drivers.remove(fc)
+    set_sun_driver(g, mat.cs2_sticker.sun_object)
+
+
+def set_sun_driver(g, sun):
+    """Drive the holo spectrum's light direction inside sticker group `g` from `sun` (None: no driver)."""
     sun_node = g.nodes.get(nb.SUN_NODE)
     if sun_node is None:
         return
@@ -201,7 +206,6 @@ def apply_sun_driver(mat):
             sock.driver_remove("default_value")
         except (TypeError, RuntimeError):
             pass
-    sun = mat.cs2_sticker.sun_object
     if sun is None:
         return
     # Direction TO the light = the light object's local +Z axis in world space
@@ -218,6 +222,81 @@ def apply_sun_driver(mat):
         var.targets[0].id = sun
         # RNA indexes matrices column-first: [2][i] = row i of the Z column
         var.targets[0].data_path = "matrix_world[2][%d]" % i
+
+
+# ====================================================================== nested sticker groups
+# Stickers placed on CS2 weapons live as sticker groups inside the weapon material (in a
+# "CS2 Weapon Stickers" group), not as materials of their own. Their textures are stored on the
+# group itself (custom property "cs2_images") so the group can be rebuilt after an update.
+
+NESTED_TAG = "cs2_nested_sticker"
+
+
+def assign_group_images(g, images):
+    """Put `images` ({slot prop: Image}) into sticker group `g`; empty slots get the defaults.
+    Returns the "Wear Mask From Sticker Alpha" value to set on the group's node."""
+    for slot in SLOTS:
+        if slot.prop == "tex_wear_mask":
+            continue
+        img = images.get(slot.prop)
+        if img is not None:
+            if img.colorspace_settings.name != slot.colorspace:
+                _set_colorspace(img, slot.colorspace)
+            if img.alpha_mode != 'CHANNEL_PACKED':
+                img.alpha_mode = 'CHANNEL_PACKED'
+        else:
+            img = default_image(slot.hemi_default or slot.default)   # compiled textures: hemi-oct normals
+        for name in slot.nodes:
+            node = g.nodes.get(name)
+            if node is not None:
+                node.image = img
+    wm = images.get("tex_wear_mask")
+    img, from_alpha = (wm, 0.0) if wm is not None else (images.get("tex_sticker") or default_image("clear"), 1.0)
+    for name in SLOT_BY_PROP["tex_wear_mask"].nodes:
+        node = g.nodes.get(name)
+        if node is not None:
+            node.image = img
+    return from_alpha
+
+
+def _group_users(g):
+    """(node tree, group node) for every group node that uses `g`."""
+    trees = [m.node_tree for m in bpy.data.materials if m.node_tree is not None] + list(bpy.data.node_groups)
+    return [(t, n) for t in trees for n in t.nodes if n.bl_idname == 'ShaderNodeGroup' and n.node_tree == g]
+
+
+def rebuild_nested_group(g):
+    """Rebuild a nested sticker group with the current node graph, keeping values, links and textures."""
+    saved = []
+    for tree, n in _group_users(g):
+        values = {}
+        for sock in n.inputs:
+            if hasattr(sock, "default_value") and not sock.is_linked:
+                try:
+                    values[sock.name] = tuple(sock.default_value)
+                except TypeError:
+                    values[sock.name] = sock.default_value
+        ins = [(l.from_socket, l.to_socket.name) for l in tree.links if l.to_node == n]
+        outs = [(l.from_socket.name, l.to_socket) for l in tree.links if l.from_node == n]
+        saved.append((tree, n, values, ins, outs))
+    nb.build_main_group(g)
+    images = {k: v for k, v in (g.get("cs2_images") or {}).items() if isinstance(v, bpy.types.Image)}
+    assign_group_images(g, images)
+    set_sun_driver(g, g.get("cs2_sun") if isinstance(g.get("cs2_sun"), bpy.types.Object) else None)
+    for tree, n, values, ins, outs in saved:
+        for name, val in values.items():
+            sock = n.inputs.get(name)
+            if sock is not None and hasattr(sock, "default_value"):
+                try:
+                    sock.default_value = val
+                except (TypeError, ValueError):
+                    pass
+        for from_sock, to_name in ins:
+            if to_name in n.inputs:
+                tree.links.new(from_sock, n.inputs[to_name])
+        for from_name, to_sock in outs:
+            if from_name in n.outputs:
+                tree.links.new(n.outputs[from_name], to_sock)
 
 
 def _upd_slot(prop):
@@ -446,6 +525,7 @@ SECTIONS = [
     ("SFX", ["Holographic", "Clamp Spectrum V", "SFX Color Boost", "Glitter", "Glitter Scale", "Self Illum"]),
     ("Wear", ["Wear", "Wear Bias X", "Wear Bias Y", "Wear Scratches", "Paper Backing", "Preserve Roughness"]),
     ("Base Weapon", ["Base Normal", "Base Normal Hemi-Oct", "Base Normal DirectX"]),
+    ("Sticker Placement", ["UV Placement", "Slot X", "Slot Y", "Slot Scale", "Rotation"]),
 ]
 
 
@@ -551,6 +631,13 @@ def upgrade_outdated_materials():
             count += 1
         except Exception as e:
             print("CS2 sticker: could not upgrade %s: %s" % (mat.name, e))
+    for g in list(bpy.data.node_groups):
+        if g.get(NESTED_TAG) and g.get("cs2_version") != nb.VERSION:
+            try:
+                rebuild_nested_group(g)
+                count += 1
+            except Exception as e:
+                print("CS2 sticker: could not upgrade %s: %s" % (g.name, e))
     if count:
         print("CS2 sticker: updated the node graph of %d material(s)" % count)
     return count

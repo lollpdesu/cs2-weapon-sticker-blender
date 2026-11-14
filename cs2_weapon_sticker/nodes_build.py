@@ -18,7 +18,7 @@ Conventions
 import math
 import bpy
 
-VERSION = 11
+VERSION = 13
 
 LUM = (0.2125000059604645, 0.7153999805450439, 0.07209999859333038)
 HEMI_BIAS = 1.00392162799835205078125  # 256/255
@@ -439,6 +439,23 @@ INPUTS = [
      "1 = raw compiled Source 2 normal (hemi-octahedral RG), 0 = regular RGB normal map"),
     ("Base Weapon", "Base Normal DirectX", 'NodeSocketFloat', 0.0, 0.0, 1.0,
      "Flip green for DirectX-style RGB normal maps"),
+    ("Base Weapon", "Base Shader", 'NodeSocketShader', None, None, None,
+     "The weapon's own shader. With Layer Over Base Shader on, the sticker is drawn over it instead of over transparency"),
+    ("Base Weapon", "Layer Over Base Shader", 'NodeSocketFloat', 0.0, 0.0, 1.0,
+     "On: show Base Shader outside the sticker (stickers inside the weapon material). Off: transparent (sticker planes)"),
+    ("Base Weapon", "Weapon Sticker Mask", 'NodeSocketFloat', 1.0, 0.0, 1.0,
+     "Where stickers may appear on the weapon: red channel of the weapon's *_sticker_mask_hd texture. 1 = everywhere"),
+    ("Sticker Placement", "UV Placement", 'NodeSocketFloat', 0.0, 0.0, 1.0,
+     "Place the sticker on the weapon's UV map like CS2 models do (connect the weapon's second UV map to "
+     "Sticker UV). Off: Sticker UV is used as is, for sticker planes and legacy sticker meshes"),
+    ("Sticker Placement", "Slot X", 'NodeSocketFloat', 0.0, -1.0, 1.0,
+     "Horizontal offset of the sticker's center from the middle of the UV map"),
+    ("Sticker Placement", "Slot Y", 'NodeSocketFloat', 0.0, -1.0, 1.0,
+     "Vertical offset of the sticker's center from the middle of the UV map (negative = towards the top, as in CS2)"),
+    ("Sticker Placement", "Slot Scale", 'NodeSocketFloat', 1.0, 0.01, 200.0,
+     "How many times smaller than the whole UV map the sticker is"),
+    ("Sticker Placement", "Rotation", 'NodeSocketFloat', 0.0, -360.0, 360.0,
+     "Extra rotation of the sticker in degrees, counter-clockwise"),
     ("Advanced", "Standard Normal Maps", 'NodeSocketFloat', 0.0, 0.0, 1.0, "0 = raw Source 2 hemi-octahedral RG, 1 = regular RGB normal maps"),
     ("Advanced", "DirectX Normals", 'NodeSocketFloat', 0.0, 0.0, 1.0, "Flip green for standard DirectX-style normal maps"),
     ("Advanced", "Invert Glitter Mask", 'NodeSocketFloat', 0.0, 0.0, 1.0, "Glitter mask is stored inverted (compiled g_tSfxMaskSticker0 alpha: black = glitter)"),
@@ -449,7 +466,7 @@ FLAG_INPUTS = {
     "Enable Sticker", "Automatic PBR Color Fitting", "Legacy Tint Multiply", "Metallic",
     "Holographic", "Clamp Spectrum V", "Glitter", "Self Illum", "Paper Backing",
     "Preserve Roughness", "Standard Normal Maps", "DirectX Normals",
-    "Invert Glitter Mask", "Wear Mask From Sticker Alpha", "Base Normal Hemi-Oct", "Base Normal DirectX",
+    "Invert Glitter Mask", "Wear Mask From Sticker Alpha", "Base Normal Hemi-Oct", "Base Normal DirectX", "UV Placement", "Layer Over Base Shader",
 }
 
 OUTPUTS = [
@@ -536,8 +553,23 @@ def build_main_group(g):
     albedo0 = (1.0, 1.0, 1.0)                                  # _23987 (g_tColor default * white tint)
     N_base_world = b.normal_map(n_base_raw)                    # _15878
 
+    # ------------------------------------------------------------------ sticker placement
+    # CS2 models (no separate sticker mesh) place the sticker on the weapon's second UV map:
+    #   sticker_uv = R(-rotation) * (uv - center) * slot_scale + 0.5,  center = (0.5 + X, 0.5 - Y)
+    # (Y is stored like in CS2: negative = towards the top of the UV map). Off: Sticker UV as is.
+    rx, ry, _ = b.sep(I("Sticker UV"))
+    place_on = I("UV Placement")
+    du = b.sub(rx, b.add(0.5, I("Slot X")))
+    dv = b.sub(ry, b.sub(0.5, I("Slot Y")))
+    rad = b.mul(I("Rotation"), math.pi / 180.0)
+    cs, sn = b.math('COSINE', rad), b.math('SINE', rad)
+    scale = I("Slot Scale")
+    pu = b.add(b.mul(b.add(b.mul(du, cs), b.mul(dv, sn)), scale), 0.5)
+    pv = b.add(b.mul(b.sub(b.mul(dv, cs), b.mul(du, sn)), scale), 0.5)
+    sx = b.mixf(rx, pu, place_on)
+    sy = b.mixf(ry, pv, place_on)
+
     # ------------------------------------------------------------------ sticker coordinates
-    sx, sy, _ = b.sep(I("Sticker UV"))
     u_src = sx
     v_src = b.sub(1.0, sy)
     uc = b.sat(u_src)
@@ -753,11 +785,18 @@ def build_main_group(g):
     b.feed(add.inputs[0], p.outputs[0])
     b.feed(add.inputs[1], dif.outputs[0])
 
-    # everything outside the (worn) sticker coverage is transparent
+    # The weapon's sticker mask (red channel of *_sticker_mask_hd) limits where stickers may appear.
+    fa = b.mul(fa, b.sat(I("Weapon Sticker Mask")))
+    # Outside the sticker coverage: transparent (sticker planes), or the weapon's own shader when the
+    # sticker is layered over it inside the weapon material. The coverage is applied exactly once.
     clear = b.node('ShaderNodeBsdfTransparent', hide=False)
+    under = b.node('ShaderNodeMixShader', hide=False)
+    b.feed(under.inputs[0], I("Layer Over Base Shader"))
+    b.feed(under.inputs[1], clear.outputs[0])
+    b.feed(under.inputs[2], I("Base Shader"))
     mixs = b.node('ShaderNodeMixShader', hide=False)
     b.feed(mixs.inputs[0], fa)
-    b.feed(mixs.inputs[1], clear.outputs[0])
+    b.feed(mixs.inputs[1], under.outputs[0])
     b.feed(mixs.inputs[2], add.outputs[0])
 
     b.feed(go.inputs["BSDF"], mixs.outputs[0])
