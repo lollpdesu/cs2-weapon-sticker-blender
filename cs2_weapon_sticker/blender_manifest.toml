@@ -1,0 +1,21 @@
+schema_version = "1.0.0"
+
+id = "cs2_weapon_sticker"
+version = "1.4.2"
+name = "CS2 Weapon Sticker Shader"
+tagline = "CS2 sticker shader recreation with an in-game sticker browser"
+maintainer = "Lollp"
+type = "add-on"
+
+blender_version_min = "4.2.0"
+
+license = ["SPDX:GPL-3.0-or-later"]
+copyright = [
+  "2026 Lollp",
+  "2020 REDxEYE (SourceIO subset, MIT)",
+]
+website = "https://github.com/lollpdesu/cs2-weapon-sticker-blender"
+tags = ["Material", "Node", "Import-Export"]
+
+[permissions]
+files = "Read the CS2 game files and cache the sticker list"
