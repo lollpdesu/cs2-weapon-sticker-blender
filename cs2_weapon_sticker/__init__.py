@@ -1,7 +1,7 @@
 bl_info = {
     "name": "CS2 Weapon Sticker Shader",
     "author": "Lollp",
-    "version": (1, 1, 0),
+    "version": (1, 2, 0),
     "blender": (4, 2, 0),
     "location": "Properties > Material > CS2 Weapon Sticker, 3D Viewport > Sidebar > CS2 Sticker",
     "description": "Node-based recreation of the CS2 csgo_weapon_sticker shader, with a browser that imports stickers straight from the game",
@@ -522,7 +522,7 @@ class CS2STICKER_OT_rebuild(bpy.types.Operator):
 SECTIONS = [
     ("Sticker Color", ["Enable Sticker", "Sticker Tint", "Tint Saturate", "Automatic PBR Color Fitting",
                        "Legacy Tint Multiply", "Color Boost", "Metallic"]),
-    ("SFX", ["Holographic", "Clamp Spectrum V", "SFX Color Boost", "Glitter", "Glitter Scale", "Self Illum"]),
+    ("SFX", ["Holographic", "Clamp Spectrum V", "SFX Color Boost", "Foil Using Glitter Mask", "Glitter", "Glitter Scale", "Self Illum"]),
     ("Wear", ["Wear", "Wear Bias X", "Wear Bias Y", "Wear Scratches", "Paper Backing", "Preserve Roughness"]),
     ("Base Weapon", ["Base Normal", "Base Normal Hemi-Oct", "Base Normal DirectX"]),
     ("Sticker Placement", ["UV Placement", "Slot X", "Slot Y", "Slot Scale", "Rotation"]),

@@ -325,7 +325,7 @@ def read_texture(data, max_size=0):
 
 # ====================================================================== sticker index
 
-INDEX_VERSION = 1
+INDEX_VERSION = 2
 
 STICKER_TYPES = [  # (key, label) in display order
     ("PAPER", "Paper"), ("GLITTER", "Glitter"), ("HOLO", "Holo"), ("FOIL", "Foil"), ("GOLD", "Gold"),
@@ -336,8 +336,9 @@ _SUFFIX_TYPE = {"holo": "HOLO", "foil": "FOIL", "gold": "GOLD", "glitter": "GLIT
 
 
 def sticker_type(material):
-    tail = material.rsplit("/", 1)[-1].rsplit("_", 1)[-1].lower()
-    return _SUFFIX_TYPE.get(tail, "PAPER")
+    """Finish from the material name: a suffix (team_foil) or, for newer collections, a prefix (foil_name)."""
+    base = material.rsplit("/", 1)[-1].lower()
+    return _SUFFIX_TYPE.get(base.rsplit("_", 1)[-1]) or _SUFFIX_TYPE.get(base.split("_", 1)[0]) or "PAPER"
 
 
 def thumbnail_path(material):
@@ -374,9 +375,23 @@ def build_index(game, progress=None):
     tokens = {k.lower(): v for k, v in (lang.get("Tokens") or lang.get("tokens") or {}).items()}
 
     def loc(token, fallback=""):
-        if token and token.startswith("#"):
-            return tokens.get(token[1:].lower(), fallback) or fallback
+        # newer sticker kits store the localization key without the leading "#"
+        if token:
+            text = tokens.get(token.lstrip("#").lower())
+            if text:
+                return text
+            if token.startswith("#"):
+                return fallback
         return token or fallback
+
+    def capsule_label(folder):
+        """The game's name for a sticker capsule/collection folder, if it has one."""
+        for t in ("csgo_crate_sticker_pack_%s_capsule", "coupon_%s_sticker_capsule", "csgo_crate_sticker_pack_%s_short",
+                  "csgo_crate_sticker_pack_%s"):
+            text = tokens.get(t % folder.lower())
+            if text:
+                return text
+        return _pretty_folder(folder)
 
     stickers = []
     coll_label = {}
@@ -401,15 +416,18 @@ def build_index(game, progress=None):
         except ValueError:
             continue
         name = loc(kit.get("item_name"), kit.get("name") or mat)
-        folder = mat.split("/", 1)[0] if "/" in mat else "misc"
+        parts = mat.split("/")
+        folder = parts[0] if len(parts) > 1 else "misc"
+        if folder == "community" and len(parts) > 2:
+            folder = "community/" + parts[1]   # newer capsules: stickers/community/<capsule>/<name>
         ev = kit.get("tournament_event_id")
         if ev:
             key = "event_%s" % ev
             label = tokens.get("csgo_tournament_event_nameshort_%s" % ev) or tokens.get(
-                "csgo_tournament_event_name_%s" % ev) or _pretty_folder(folder)
+                "csgo_tournament_event_name_%s" % ev) or _pretty_folder(folder.rsplit("/", 1)[-1])
         else:
             key = "folder_%s" % folder
-            label = _pretty_folder(folder)
+            label = capsule_label(folder.rsplit("/", 1)[-1])
         coll_label.setdefault(key, label)
         coll_newest[key] = max(coll_newest.get(key, 0), sid)
         stickers.append([sid, name, mat, key, sticker_type(mat)])

@@ -24,7 +24,7 @@ Imports any sticker straight from your Counter-Strike 2 install, with its textur
 1. The CS2 folder is found automatically through Steam. If not, set it under **Edit > Preferences > Add-ons > CS2 Weapon Sticker Shader** (the folder that contains `game/csgo/pak01_dir.vpk`).
 2. The sticker list loads by itself a moment after Blender starts. The first time it reads `items_game.txt` and the English names (about 1 second). After that it comes from a cache.
    * **Automatic updates:** once a minute the add-on checks whether a CS2 update changed the game files. If so, it rebuilds the list in the background. Stickers added by the update are shown in a banner and under **Collection > New in Latest CS2 Update**. You can turn this off in the add-on preferences (**Update Sticker List Automatically**); the refresh button at the bottom of the panel rebuilds the list by hand.
-3. Search by name, team, player or tournament, and filter by **Collection** and **Type** (Paper, Glitter, Holo, Foil, Gold, Lenticular, Embroidered). Thumbnails are the game's own preview images.
+3. Search by name, team, player or tournament, and filter by **Collection** and **Type** (Paper, Glitter, Holo, Foil, Gold, Lenticular, Embroidered). Collections use the game's own capsule names; community capsules are listed one by one (for example *Fruits And Veggies Sticker Collection*, *Jackass Sticker Capsule*). Thumbnails are the game's own preview images, with transparent backgrounds.
 4. Click a sticker, choose **Import To**, set an initial **Wear**, and click **Import Sticker**:
    * *New Plane*: a plane with the sticker's aspect ratio at the 3D cursor.
    * *Selected Objects*: the sticker material on the selected objects' active slot, using their own UVs (legacy CS:GO sticker meshes).
@@ -98,6 +98,8 @@ Each mask and roughness map has its own slot. Grayscale masks are read from the 
 | Sticker Scratches | `g_tStickerScratches` R | none |
 
 The compiled `g_tSfxMaskSticker0` alpha stores the glitter mask inverted (black = glitter). If your glitter mask comes from that channel, turn on **Invert Glitter Mask** under its slot.
+
+**Foil Using Glitter Mask** (`g_bFoilUsingGlitterMaskSticker0`, SFX panel): added with the Singapore 2026 stickers. When on, the glitter mask's black areas also count as metal, so a foil sticker can be metallic only in parts instead of everywhere. The import sets it from the sticker's material.
 
 If your sticker normal maps are regular RGB normal maps rather than raw hemi-octahedral RG, set **Normal Format** to *Standard RGB*.
 

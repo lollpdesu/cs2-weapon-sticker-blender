@@ -18,7 +18,7 @@ Conventions
 import math
 import bpy
 
-VERSION = 13
+VERSION = 14
 
 LUM = (0.2125000059604645, 0.7153999805450439, 0.07209999859333038)
 HEMI_BIAS = 1.00392162799835205078125  # 256/255
@@ -423,6 +423,7 @@ INPUTS = [
     ("SFX", "Holographic", 'NodeSocketFloat', 0.0, 0.0, 1.0, "g_bHolographicSticker0"),
     ("SFX", "Clamp Spectrum V", 'NodeSocketFloat', 1.0, 0.0, 1.0, "g_bClampSpectrumVSticker0"),
     ("SFX", "SFX Color Boost", 'NodeSocketFloat', 1.0, 0.0, 64.0, "g_flSfxColorBoostSticker0"),
+    ("SFX", "Foil Using Glitter Mask", 'NodeSocketFloat', 0.0, 0.0, 1.0, "g_bFoilUsingGlitterMaskSticker0"),
     ("SFX", "Glitter", 'NodeSocketFloat', 0.0, 0.0, 1.0, "g_bGlitterSticker0"),
     ("SFX", "Glitter Scale", 'NodeSocketFloat', 1.0, 0.0, 2.0, "g_flGlitterScaleSticker0"),
     ("SFX", "Self Illum", 'NodeSocketFloat', 0.0, 0.0, 1.0, "g_bSelfIllumSticker0"),
@@ -464,7 +465,7 @@ INPUTS = [
 
 FLAG_INPUTS = {
     "Enable Sticker", "Automatic PBR Color Fitting", "Legacy Tint Multiply", "Metallic",
-    "Holographic", "Clamp Spectrum V", "Glitter", "Self Illum", "Paper Backing",
+    "Holographic", "Clamp Spectrum V", "Foil Using Glitter Mask", "Glitter", "Self Illum", "Paper Backing",
     "Preserve Roughness", "Standard Normal Maps", "DirectX Normals",
     "Invert Glitter Mask", "Wear Mask From Sticker Alpha", "Base Normal Hemi-Oct", "Base Normal DirectX", "UV Placement", "Layer Over Base Shader",
 }
@@ -658,7 +659,10 @@ def build_main_group(g):
     gf = I("Glitter")
     glitter_color = b.vscale(glit_c, gf)                       # _13138
     n16344 = b.vmix(n10176, glit_n, gf)
-    m = b.mixf(metal_flag, glit_m, gf)                         # _16864
+    m_g = b.mixf(metal_flag, glit_m, gf)                       # _16864
+    # Foil with a mask (Singapore 2026+): the inverted glitter mask (1 - g_tSfxMaskSticker0.a) marks
+    # the metal foil areas: metal amount = max(_16864, 1 - sfx.a). Used for tint, levels, metalness.
+    m = b.mixf(m_g, b.max(m_g, gm), I("Foil Using Glitter Mask"))   # _12889
 
     # ------------------------------------------------------------------ sticker color (_12889)
     c = S

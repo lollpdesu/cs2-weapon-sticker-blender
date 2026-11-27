@@ -215,6 +215,9 @@ def load_index(context, rebuild=False):
         except (OSError, ValueError, KeyError, TypeError):
             cached = None
     same_game = cached is not None and cached.get("key") == key
+    # same game files, only the add-on's list format changed: rebuild, but keep the "new" marking
+    game_part = key.split("_", 1)[-1]
+    same_files = cached is not None and str(cached.get("key", "")).split("_", 1)[-1] == game_part
     if same_game and not rebuild:
         _set_index(cached["index"], key, cached.get("new_ids", []), cached.get("updated", 0.0))
         return _INDEX["data"]
@@ -226,22 +229,22 @@ def load_index(context, rebuild=False):
     finally:
         end()
 
-    if same_game:  # manual rebuild of the same game version: keep what was new
+    if same_game or same_files:  # rebuild of the same game version: keep what was new
         new_ids, updated = cached.get("new_ids", []), cached.get("updated", 0.0)
-    elif cached is not None and str(cached.get("key", "")).startswith("%d_" % cd.INDEX_VERSION):
+    elif cached is not None:
         old = {s[0] for s in cached["index"]["stickers"]}
         new_ids = sorted(s[0] for s in data["stickers"] if s[0] not in old)
         updated = time.time() if new_ids else cached.get("updated", 0.0)
         if not new_ids:  # update without new stickers: keep the previous "new" set
             new_ids = [i for i in cached.get("new_ids", []) if any(s[0] == i for s in data["stickers"])]
-    else:  # first run (or index format changed): nothing counts as new
+    else:  # first run: nothing counts as new
         new_ids, updated = [], 0.0
     try:
         with open(cache_file, "w", encoding="utf-8") as f:
             json.dump({"key": key, "index": data, "new_ids": new_ids, "updated": updated}, f)
     except OSError:
         pass
-    if not same_game and _PREVIEWS["coll"] is not None:
+    if not same_game and not same_files and _PREVIEWS["coll"] is not None:
         _PREVIEWS["coll"].clear()  # previews may have changed with the update
     _set_index(data, key, new_ids, updated)
     return data
@@ -310,6 +313,7 @@ def thumbnail_icon(context, material):
             arr, _info = cd.read_texture(data, max_size=256)
             h, w = arr.shape[:2]
             px = np.flipud(arr).astype(np.float32) / 255.0
+            px[..., :3] *= px[..., 3:4]   # previews are premultiplied: transparent pixels must be black
             pv.image_size = (w, h)
             pv.image_pixels_float.foreach_set(px.ravel())
     except Exception as e:  # missing or unreadable preview: leave it blank
