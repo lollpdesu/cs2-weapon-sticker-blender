@@ -29,6 +29,7 @@ Imports any sticker straight from your Counter-Strike 2 install, with its textur
    * *New Plane*: a plane with the sticker's aspect ratio at the 3D cursor.
    * *Selected Objects*: the sticker material on the selected objects' active slot, using their own UVs (legacy CS:GO sticker meshes).
    * *Weapon (CS2 Model)*: the sticker layered into a sticker slot of the active weapon's own material, see below.
+   * *Console Link*: every sticker of a CS2 console link, placed exactly like on that item, see below.
 
 What the import does:
 
@@ -43,15 +44,33 @@ Sprays (graffiti) and stickers without a sticker material are not listed.
 
 Legacy CS:GO models carry a separate sticker mesh with its own UVs. CS2 models don't: the sticker is placed on the weapon's second UV map (`TEXCOORD_1`), at a fixed position per weapon and slot, and a sticker mask on the weapon limits where stickers may appear.
 
+The slots are read from the weapon model in your game files (`weapons/models/<weapon>/weapon_*.vmdl_c`, its `StickerMarkup` key values), so they are exact and follow CS2 updates.
+
 1. Select the weapon model and set **Import To** to *Weapon (CS2 Model)*.
-2. **Weapon**: *Detect from Object Name* recognizes the CS2 name in the object, mesh or material name (for example `weapon_snip_awp`); otherwise pick the weapon. 34 weapons are included.
-3. **Slot**: 1 to 5, depending on the weapon. **UV Map**: empty uses the second UV map (or the first if there is only one).
-4. **Import Sticker**. Repeat for the other slots; importing into a slot that is already used replaces that sticker.
+2. **Weapon**: pick the weapon. 34 weapons are included.
+3. **Model**: *CS2* for the current weapon model, *Legacy* for the legacy model that legacy finishes use. The two models have their own slot positions and sizes, and their own sticker mask (`_sticker_mask_hd` or `_sticker_mask_legacy`; 21 weapons have a legacy mask).
+4. **Slot**: numbered 1 to 4 (5 on the G3SG1, M4A1-S, USP-S and R8, 6 on the MP5-SD) from the best to the least valued position, following pinkxzy's community guides ([CS2](https://steamcommunity.com/sharedfiles/filedetails/?id=3168600963), [legacy](https://steamcommunity.com/sharedfiles/filedetails/?id=2590458348)); for example *Slot 1* on the AWP is the scope. Hover a slot to see its position, size and rotation. Switching **Model** keeps the slot number and uses that model's values. **UV Map**: empty uses the second UV map (or the first if there is only one).
+5. **X / Y / R** (under Wear): an optional custom placement, like moving and rotating a sticker in the game before applying it. X and Y move the sticker from the slot's position along the weapon's UV map (Y negative = towards the top), R adds degrees to the slot's rotation. These are the same numbers a console link stores. Leave them at 0 for the slot's own position.
+6. **Import Sticker**. Repeat for the other slots; importing into a slot that is already used replaces that sticker.
+
+### Console Link import
+
+Places all stickers of a real (or crafted) CS2 item on the weapon in one go, including custom positions, rotations and scrape levels.
+
+1. Set **Import To** to *Console Link* and paste the item's console link into **Link**. It looks like `csgo_econ_action_preview 00180920F405…` (a steam:// link with the same hex code works too). The link is read offline; nothing is downloaded.
+2. Choose the weapon model:
+   * **Selected Model**: the weapon model you already have in the scene (select it first).
+   * **Import from Game**: the add-on imports the weapon model straight from your CS2 files, named after the skin (for example *AWP | Gungnir*). Each CS2 weapon file holds the CS2 and the legacy model; only the one the skin uses is imported, with both UV maps and the game's normals. The skin's textures are not part of the import; the model gets a plain grey material.
+3. **Import from Link**.
+
+The link decides everything else: the weapon, whether the skin uses the legacy model (read from `items_game.txt`, `use_legacy_model`), each sticker, its slot, its offset and rotation, and its wear. A custom placement is applied the way the game does it: the offset is added to the slot's position and the rotation (in degrees) to the slot's rotation; the size stays the slot's. Moved stickers can share a slot number in the link (for example two stickers both in slot 2); each still gets its own layer. Importing the same link again replaces those stickers instead of adding them twice; each *Import from Game* creates a new model with its own material.
+
+Old-style inspect links (`…S76561…A…D…`) only point at an item on Valve's servers and contain no sticker data, so they can't be used. Importing the model from the game is only offered for console links; for the other targets, import or prepare the weapon model yourself.
 
 No new material or object is created. The sticker goes into the weapon's own (active) material, in one **CS2 Weapon Stickers** node between the weapon's shader and the Material Output:
 
 * **BSDF**: the weapon's shader (wired automatically); the stickers are drawn over it.
-* **Mask**: the weapon's sticker mask. The add-on loads `weapons/models/<weapon>/materials/stickers/*_sticker_mask_hd` from the game and connects its red channel, sampled with the weapon's first UV map.
+* **Mask**: the weapon's sticker mask. The add-on loads `weapons/models/<weapon>/materials/stickers/*_sticker_mask_hd` (or `*_sticker_mask_legacy` for the legacy model) from the game and connects its red channel, sampled with the weapon's first UV map.
 * **NormalMap**: connect the weapon's normal map here (Image Texture, Non-Color) so the stickers follow its bumps.
 
 Inside the group, every slot is its own sticker group (*Slot 1 | …*, *Slot 2 | …*), chained in slot order. Press **Tab** on the node to open it and change a sticker's settings, for example its **Wear**, on its slot node.
@@ -61,7 +80,7 @@ The placement is set on each slot node in its **Sticker Placement** panel and ca
 * **UV Placement**: on for CS2 models; off (the default) uses the Sticker UV as is, for planes and legacy sticker meshes.
 * **Slot X / Slot Y**: offset of the sticker's center from the middle of the UV map (Y negative = towards the top, as in CS2).
 * **Slot Scale**: how many times smaller than the whole UV map the sticker is.
-* **Rotation**: extra rotation in degrees, counter-clockwise.
+* **Rotation**: rotation in degrees, counter-clockwise. Some slots are rotated in the game, for example the grip slot on most pistols (Glock-18: 22.7°). The game stores it in turns (`g_flStickerNRotation` × 2π); the add-on converts it.
 
 The sticker UV is `(uv - (0.5 + X, 0.5 - Y)) * Scale + 0.5`, rotated around the sticker's center.
 
@@ -110,6 +129,8 @@ The normal map of the weapon under the sticker (`g_tNormal`) is a node input: op
 * **Base Normal Hemi-Oct**: turn on for a raw compiled CS2 normal map (hemi-octahedral RG), leave off for a regular RGB normal map.
 * **Base Normal DirectX**: turn on for DirectX-style RGB normal maps (flipped green).
 
+* **Base Normal Strength**: how strongly the weapon's bumps show through the sticker. Default 0.1 (a sticker smooths over the surface); 1 = full strength.
+
 This is independent of the sticker's **Normal Format**. Files from 1.0.0 that had a texture in the old *Base Normal* slot are converted automatically when opened.
 
 The material is transparent everywhere the sticker isn't drawn, including worn-away areas, so the plane works as a decal. The holo spectrum's sun direction comes from the **Sun** picker in the panel, through a driver on a node inside the group. Without a sun set, it points mostly straight up.
@@ -132,7 +153,8 @@ These parts can't be reproduced one-to-one in Blender:
 
 * Reading the game files uses a small part of **[SourceIO](https://github.com/REDxEYE/SourceIO)** by REDxEYE (MIT License, see `cs2_weapon_sticker/sourceio/LICENSE`): its native helper library (VPK reader, BCn texture decoding, LZ4/Zstd) and its binary KeyValues3 reader.
 * File layouts follow **[ValveResourceFormat / Source 2 Viewer](https://github.com/ValveResourceFormat/ValveResourceFormat)** (MIT License).
-* The sticker slot positions per weapon come from `sticker_offsets_db.csv` in **[KeisariKine/cs2-stickers-blender](https://github.com/KeisariKine/cs2-stickers-blender)**.
+* The slot order (best position first) follows the community guides by **pinkxzy** on Steam ([CS2](https://steamcommunity.com/sharedfiles/filedetails/?id=3168600963), [legacy](https://steamcommunity.com/sharedfiles/filedetails/?id=2590458348)).
+* Earlier versions used the sticker slot table from **[KeisariKine/cs2-stickers-blender](https://github.com/KeisariKine/cs2-stickers-blender)**; since 1.3.0 the slots are read from the game files.
 * Not affiliated with or endorsed by Valve. Counter-Strike and CS2 are trademarks of Valve Corporation. The add-on reads your own game install; no game files are included.
 
 ## License

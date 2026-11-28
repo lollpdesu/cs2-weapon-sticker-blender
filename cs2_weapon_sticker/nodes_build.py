@@ -18,7 +18,7 @@ Conventions
 import math
 import bpy
 
-VERSION = 14
+VERSION = 15
 
 LUM = (0.2125000059604645, 0.7153999805450439, 0.07209999859333038)
 HEMI_BIAS = 1.00392162799835205078125  # 256/255
@@ -440,12 +440,14 @@ INPUTS = [
      "1 = raw compiled Source 2 normal (hemi-octahedral RG), 0 = regular RGB normal map"),
     ("Base Weapon", "Base Normal DirectX", 'NodeSocketFloat', 0.0, 0.0, 1.0,
      "Flip green for DirectX-style RGB normal maps"),
+    ("Base Weapon", "Base Normal Strength", 'NodeSocketFloat', 0.1, 0.0, 1.0,
+     "How strongly the weapon's normal map shows through the sticker. 1 = full strength, 0 = flat"),
     ("Base Weapon", "Base Shader", 'NodeSocketShader', None, None, None,
      "The weapon's own shader. With Layer Over Base Shader on, the sticker is drawn over it instead of over transparency"),
     ("Base Weapon", "Layer Over Base Shader", 'NodeSocketFloat', 0.0, 0.0, 1.0,
      "On: show Base Shader outside the sticker (stickers inside the weapon material). Off: transparent (sticker planes)"),
     ("Base Weapon", "Weapon Sticker Mask", 'NodeSocketFloat', 1.0, 0.0, 1.0,
-     "Where stickers may appear on the weapon: red channel of the weapon's *_sticker_mask_hd texture. 1 = everywhere"),
+     "Where stickers may appear on the weapon: red channel of the weapon's *_sticker_mask_hd (or *_sticker_mask_legacy) texture. 1 = everywhere"),
     ("Sticker Placement", "UV Placement", 'NodeSocketFloat', 0.0, 0.0, 1.0,
      "Place the sticker on the weapon's UV map like CS2 models do (connect the weapon's second UV map to "
      "Sticker UV). Off: Sticker UV is used as is, for sticker planes and legacy sticker meshes"),
@@ -549,7 +551,8 @@ def build_main_group(g):
     # base color / metalness / tint are fixed to the shader defaults; AO is not used
     M = 0.0                                                   # _18169 (g_tMetalness default)
     rough_base = rough_of(Rc)                                  # _12835
-    n_base_raw = decode(Nc, std_base, dx_base)                 # _18354
+    # Base Normal Strength fades the weapon's bumps under the sticker towards flat
+    n_base_raw = b.vnorm(b.vmix((0.0, 0.0, 1.0), decode(Nc, std_base, dx_base), I("Base Normal Strength")))  # _18354
     w_base = b.flip_y(n_base_raw)                              # _20480
     albedo0 = (1.0, 1.0, 1.0)                                  # _23987 (g_tColor default * white tint)
     N_base_world = b.normal_map(n_base_raw)                    # _15878
@@ -789,7 +792,7 @@ def build_main_group(g):
     b.feed(add.inputs[0], p.outputs[0])
     b.feed(add.inputs[1], dif.outputs[0])
 
-    # The weapon's sticker mask (red channel of *_sticker_mask_hd) limits where stickers may appear.
+    # The weapon's sticker mask (red channel of *_sticker_mask_hd or _legacy) limits where stickers may appear.
     fa = b.mul(fa, b.sat(I("Weapon Sticker Mask")))
     # Outside the sticker coverage: transparent (sticker planes), or the weapon's own shader when the
     # sticker is layered over it inside the weapon material. The coverage is applied exactly once.

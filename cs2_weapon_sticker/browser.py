@@ -332,25 +332,71 @@ def _collection_items(self, context):
     return _COLLECTION_ITEMS
 
 
-_WEAPON_ITEMS = [("AUTO", "Detect from Object Name", "Use the weapon whose CS2 name (e.g. awp, ak47) is in the object, "
-                                                    "mesh or material name")] + [
-    (key, disp, "%d sticker slots" % len(slots))
-    for key, (disp, _aliases, slots) in sorted(ws.WEAPONS.items(), key=lambda kv: kv[1][0].lower())]
+_WEAPON_ITEMS = [
+    (key, disp, "Sticker slots and mask of the %s, read from the game files" % disp)
+    for key, (disp, _folder) in sorted(ws.WEAPONS.items(), key=lambda kv: kv[1][0].lower())]
 
 
 def _weapon_items(self, context):
     return _WEAPON_ITEMS
 
 
-def weapon_for(state, obj):
-    """Weapon key for the import: the chosen one, or detected from the object's names."""
-    if state.weapon != "AUTO":
-        return state.weapon
-    if obj is None:
-        return None
-    names = [obj.name, getattr(obj.data, "name", "")]
-    names += [m.name for m in getattr(obj.data, "materials", []) if m is not None]
-    return ws.detect_weapon(*names)
+def weapon_for(state, obj=None):
+    """Weapon key for the import (the one chosen under Weapon)."""
+    return state.weapon if state.weapon in ws.WEAPONS else None
+
+
+_SLOT_CACHE = {}
+
+
+def weapon_slots(context, key):
+    """Every sticker slot of the weapon's model in the game files, CS2 and legacy, including
+    deprecated ones (cached per CS2 version). See cs2data.read_sticker_slots."""
+    game = cd.Game.open(cs2_root(context))
+    ck = (game.vpk_file, os.path.getmtime(game.vpk_file), key)
+    if ck not in _SLOT_CACHE:
+        path = cd.weapon_model_path(game, ws.folder(key))
+        _SLOT_CACHE[ck] = cd.read_sticker_slots(game.read(path)) if path else []
+    return _SLOT_CACHE[ck]
+
+
+def model_slots(context, key, legacy):
+    """The slots the game offers on the CS2 or the legacy model (deprecated ones left out), in the
+    add-on's slot order (weapon_slots.SLOT_ORDER, best position first). The add-on numbers them 1..N."""
+    live = {s["index"]: s for s in weapon_slots(context, key) if s["legacy"] == bool(legacy) and not s["deprecated"]}
+    order = ws.SLOT_ORDER.get(key, {}).get("legacy" if legacy else "hd", [])
+    ranked = [live[i] for i in order if i in live]
+    return ranked + [s for i, s in sorted(live.items()) if i not in order]
+
+
+def find_slot(context, key, ident, legacy):
+    """(slot number, slot entry) for the Slot enum value, or (0, None)."""
+    slots = model_slots(context, key, legacy)
+    try:
+        n = int(ident)
+    except (TypeError, ValueError):
+        return 0, None
+    return (n, slots[n - 1]) if 1 <= n <= len(slots) else (0, None)
+
+
+_SLOT_ITEMS = {}   # Blender needs the enum item strings kept alive
+
+
+def _slot_items(self, context):
+    key = weapon_for(self)
+    if key is None or context is None:
+        return [("NONE", "No Slots", "")]
+    legacy = self.model == 'LEGACY'
+    try:
+        slots = model_slots(context, key, legacy)
+    except Exception:
+        slots = []
+    items = [(str(n), "Slot %d" % n,
+              "X %.4f  Y %.4f  Scale %.3f  Rotation %.1f°" % (s["x"], s["y"], s["scale"], s["rotation"]),
+              n)   # value = slot number, so switching CS2 <-> Legacy keeps it
+             for n, s in enumerate(slots, 1)] or [("NONE", "No Slots", "")]
+    _SLOT_ITEMS[(key, legacy)] = items
+    return items
 
 
 def sticker_uv_name(state, obj):
@@ -361,6 +407,14 @@ def sticker_uv_name(state, obj):
     if len(layers) >= 2:
         return layers[1].name
     return layers[0].name if len(layers) else ""
+
+
+def _model_changed(self, context):
+    """Switching CS2 <-> Legacy keeps the slot number if the other model has that many slots;
+    otherwise the first slot is chosen."""
+    items = [i[0] for i in _slot_items(self, context)]
+    if self.slot not in items:
+        self.slot = items[0]
 
 
 def _reset_page(self, context):
@@ -385,13 +439,41 @@ class CS2StickerBrowserState(bpy.types.PropertyGroup):
                ('SELECTED', "Selected Objects", "Assign the sticker material to the active slot of the selected objects "
                                                 "(legacy CS:GO sticker meshes, or your own UVs)"),
                ('WEAPON', "Weapon (CS2 Model)", "Layer the sticker into a sticker slot of the active weapon's material, "
-                                                "placed on its UV map like CS2 models do")],
+                                                "placed on its UV map like CS2 models do"),
+               ('LINK', "Console Link", "Place every sticker of a CS2 console (inspect) link on the weapon: "
+                                        "slots, custom placement and wear, read from the link")],
         default='PLANE')
+    link: StringProperty(name="Console Link",
+                         description="Paste a console link from CS2 ('csgo_econ_action_preview 00…' with a long hex code). "
+                                     "Read offline; old S…A…D… links contain no sticker data")
+    link_model: EnumProperty(
+        name="Weapon Model",
+        items=[('SELECTED', "Selected Model", "Put the stickers on the weapon model selected in the viewport"),
+               ('GAME', "Import from Game", "Import the weapon model from the game files (the CS2 or legacy model, "
+                                            "whichever the skin uses) and put the stickers on it")],
+        default='SELECTED')
+    offset_x: FloatProperty(name="X", default=0.0, step=0.1, precision=4,
+                            description="Custom placement: moves the sticker from the slot's position along the weapon's "
+                                        "UV map (like offset X in a console link)")
+    offset_y: FloatProperty(name="Y", default=0.0, step=0.1, precision=4,
+                            description="Custom placement: moves the sticker from the slot's position, negative = "
+                                        "towards the top of the UV map (like offset Y in a console link)")
+    offset_rot: FloatProperty(name="R", default=0.0, min=-360.0, max=360.0, step=100, precision=1,
+                              description="Custom placement: extra rotation in degrees, added to the slot's own "
+                                          "rotation (like rotation in a console link)")
     plane_size: FloatProperty(name="Plane Size", default=1.0, min=0.001, soft_max=10.0, unit='LENGTH',
                               description="Length of the plane's longer side")
     weapon: EnumProperty(name="Weapon", items=_weapon_items,
-                         description="Which weapon's sticker slot positions to use")
-    slot: IntProperty(name="Slot", min=1, max=5, default=1, description="Sticker slot (1 to 5, depending on the weapon)")
+                         description="Which weapon's sticker slot positions and sticker mask to use")
+    model: EnumProperty(
+        name="Model",
+        items=[('HD', "CS2", "The current CS2 weapon model (body_hd slots, *_sticker_mask_hd)"),
+               ('LEGACY', "Legacy", "The legacy weapon model used by legacy finishes (body_legacy slots, "
+                                    "*_sticker_mask_legacy)")],
+        default='HD', update=_model_changed,
+        description="Which version of the weapon model it is. Picks that model's sticker slots and sticker mask")
+    slot: EnumProperty(name="Slot", items=_slot_items,
+                       description="Sticker slot of the chosen model, numbered like in the game")
     uv_map: StringProperty(name="UV Map",
                            description="UV map the stickers are placed on. CS2 models use the second UV map "
                                        "(TEXCOORD_1). Empty: the second UV map, or the first if there is only one")
@@ -715,15 +797,15 @@ def _make_plane(context, name, aspect, size):
     return obj
 
 
-MASK_FOLDER = {"glock": "glock18"}   # weapon key -> folder under weapons/models/ where it differs
 
 
-def load_weapon_mask(context, key):
-    """The weapon's sticker mask (red channel of weapons/models/<weapon>/materials/stickers/*_sticker_mask_hd*)
-    as a packed grayscale image, or None if the weapon has none."""
+def load_weapon_mask(context, key, legacy=False):
+    """The weapon's sticker mask (red channel of weapons/models/<weapon>/materials/stickers/*_sticker_mask_hd*,
+    or *_sticker_mask_legacy* for the legacy model) as a packed grayscale image, or None if the weapon has none."""
     game = cd.Game.open(cs2_root(context))
-    folder = MASK_FOLDER.get(key, key)
-    hits = sorted(k for k, _data in game.vpk.glob("weapons/models/%s/materials/stickers/*sticker_mask_hd*" % folder))
+    folder = ws.folder(key)
+    kind = "legacy" if legacy else "hd"
+    hits = sorted(k for k, _data in game.vpk.glob("weapons/models/%s/materials/stickers/*sticker_mask_%s*" % (folder, kind)))
     if not hits:
         return None
     arr, _info = cd.read_texture(game.read(hits[0]))
@@ -744,6 +826,8 @@ class CS2STICKER_OT_import(bpy.types.Operator):
 
     def execute(self, context):
         st = context.window_manager.cs2_sticker_browser
+        if st.target == 'LINK':
+            return self.import_link(context, st)
         sid = self.sticker_id if self.sticker_id >= 0 else st.selected
         sticker = sticker_by_id(sid)
         if sticker is None:
@@ -758,31 +842,38 @@ class CS2STICKER_OT_import(bpy.types.Operator):
             if weapon_obj is None or weapon_obj.type != 'MESH':
                 self.report({'WARNING'}, "Select the weapon (a mesh object) first")
                 return {'CANCELLED'}
-            key = weapon_for(st, weapon_obj)
+            key = weapon_for(st)
             if key is None:
-                self.report({'WARNING'}, "Could not tell which weapon '%s' is. Choose it under Weapon" % weapon_obj.name)
+                self.report({'WARNING'}, "Choose the weapon under Weapon")
                 return {'CANCELLED'}
-            slots = ws.WEAPONS[key][2]
-            if st.slot > len(slots):
-                self.report({'WARNING'}, "The %s has %d sticker slots" % (ws.WEAPONS[key][0], len(slots)))
+            try:
+                slot_no, slot_data = find_slot(context, key, st.slot, st.model == 'LEGACY')
+            except Exception as e:
+                self.report({'ERROR'}, "Could not read the %s's sticker slots: %s" % (ws.display(key), e))
+                return {'CANCELLED'}
+            if slot_data is None:
+                self.report({'WARNING'}, "Choose a sticker slot of the %s" % ws.display(key))
                 return {'CANCELLED'}
             uv_name = sticker_uv_name(st, weapon_obj)
             if not uv_name:
                 self.report({'WARNING'}, "'%s' has no UV map" % weapon_obj.name)
                 return {'CANCELLED'}
+            slot_data = with_offsets(slot_data, st.offset_x, st.offset_y, st.offset_rot)
         t = time.time()
         if st.target == 'WEAPON':
             from . import weapon_layer
             try:
-                mat, _node, mask = weapon_layer.place_sticker(context, weapon_obj, key, st.slot, uv_name, sticker, st)
+                mat, _node, mask = weapon_layer.place_sticker(context, weapon_obj, key, slot_no, slot_data,
+                                                              uv_name, sticker, st)
             except Exception as e:
                 import traceback
                 traceback.print_exc()
                 self.report({'ERROR'}, "Import failed: %s" % e)
                 return {'CANCELLED'}
-            self.report({'INFO'}, "%s: slot %d of %s in material '%s'%s (%.1f s)" % (
-                sticker[1], st.slot, ws.WEAPONS[key][0], mat.name,
-                "" if mask else ", no sticker mask found for this weapon", time.time() - t))
+            self.report({'INFO'}, "%s: %s of %s in material '%s'%s (%.1f s)" % (
+                sticker[1], "Slot %d" % slot_no, ws.display(key), mat.name,
+                "" if mask else ", no %ssticker mask found for this weapon" % ("legacy " if st.model == 'LEGACY' else ""),
+                time.time() - t))
             return {'FINISHED'}
         try:
             mat, aspect = import_sticker(context, sticker, st)
@@ -804,6 +895,94 @@ class CS2STICKER_OT_import(bpy.types.Operator):
                     o.material_slots[o.active_material_index].material = mat
         self.report({'INFO'}, "Imported %s (%.1f s)" % (sticker[1], time.time() - t))
         return {'FINISHED'}
+
+
+    def import_link(self, context, st):
+        from . import inspect_link, weapon_layer, weapon_model
+        try:
+            item = inspect_link.decode(st.link)
+        except inspect_link.LinkError as e:
+            self.report({'WARNING'}, str(e))
+            return {'CANCELLED'}
+        data = _INDEX["data"] or {}
+        classname = (data.get("weapons") or {}).get(str(item["defindex"]))
+        key = ws.key_for_classname(classname)
+        if key is None:
+            self.report({'WARNING'}, "The link is for %s, which doesn't take stickers here" % (
+                classname or "item %d" % item["defindex"]))
+            return {'CANCELLED'}
+        legacy = item["paintindex"] in set(data.get("legacy_paints") or [])
+        if not item["stickers"]:
+            self.report({'WARNING'}, "The link's %s has no stickers" % ws.display(key))
+            return {'CANCELLED'}
+        t = time.time()
+        if st.link_model == 'GAME':
+            skin = (data.get("paint_names") or {}).get(str(item["paintindex"]))
+            try:
+                weapon_obj = weapon_model.import_weapon(context, key, legacy,
+                                                        "%s | %s" % (ws.display(key), skin) if skin else None)
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self.report({'ERROR'}, "Could not import the %s model: %s" % (ws.display(key), e))
+                return {'CANCELLED'}
+        else:
+            weapon_obj = context.active_object
+            if weapon_obj is None or weapon_obj.type != 'MESH':
+                self.report({'WARNING'}, "Select the weapon model first, or choose Import from Game")
+                return {'CANCELLED'}
+        uv_name = sticker_uv_name(st, weapon_obj)
+        if not uv_name:
+            self.report({'WARNING'}, "'%s' has no UV map" % weapon_obj.name)
+            return {'CANCELLED'}
+        # show what the link chose in the Weapon settings too
+        st.weapon = key
+        st.model = 'LEGACY' if legacy else 'HD'
+        try:
+            all_slots = weapon_slots(context, key)
+            live = model_slots(context, key, legacy)
+        except Exception as e:
+            self.report({'ERROR'}, "Could not read the %s's sticker slots: %s" % (ws.display(key), e))
+            return {'CANCELLED'}
+        placed, missing, used = 0, [], set()
+        for s in item["stickers"]:
+            sticker = sticker_by_id(s["sticker_id"])
+            entry = next((e for e in all_slots if e["index"] == s["slot"] and e["legacy"] == legacy), None)
+            if sticker is None or entry is None:
+                missing.append("sticker %d" % s["sticker_id"] if sticker is None else "slot %d" % s["slot"])
+                continue
+            shown = next((n for n, e in enumerate(live, 1) if e is entry), 100 + entry["index"])
+            # with custom placement several stickers can share a game slot: each gets its own layer
+            # (numbers 10 apart, so importing the same link again replaces the same layers)
+            slot_no = shown
+            while slot_no in used:
+                slot_no += 10
+            used.add(slot_no)
+            data_slot = with_offsets(entry, s["offset_x"], s["offset_y"], s["rotation"])
+            try:
+                weapon_layer.place_sticker(context, weapon_obj, key, slot_no, data_slot, uv_name, sticker, st,
+                                           wear=min(max(s["wear"], 0.0), 1.0), legacy=legacy,
+                                           slot_label="Slot %d" % shown if shown < 100 else None)
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self.report({'ERROR'}, "Import failed: %s" % e)
+                return {'CANCELLED'}
+            placed += 1
+        self.report({'WARNING'} if missing else {'INFO'}, "%d sticker%s on the %s (%s model)%s (%.1f s)" % (
+            placed, "" if placed == 1 else "s", ws.display(key), "legacy" if legacy else "CS2",
+            (", skipped: " + ", ".join(missing)) if missing else "", time.time() - t))
+        return {'FINISHED'} if placed else {'CANCELLED'}
+
+
+def with_offsets(slot_data, dx, dy, drot):
+    """A copy of a slot entry moved and rotated by a custom placement (as CS2 applies it:
+    offset added to the slot's position, rotation in degrees added to the slot's rotation)."""
+    d = dict(slot_data)
+    d["x"] = slot_data["x"] + dx
+    d["y"] = slot_data["y"] + dy
+    d["rotation"] = slot_data["rotation"] + drot
+    return d
 
 
 # ====================================================================== panel
@@ -878,31 +1057,46 @@ class CS2STICKER_PT_browser(bpy.types.Panel):
         col = box.column()
         col.use_property_split = True
         col.prop(st, "target")
-        if st.target == 'PLANE':
+        if st.target == 'LINK':
+            col.prop(st, "link", text="Link")
+            row = col.row(align=True)
+            row.prop(st, "link_model", expand=True)
+            ob = context.active_object
+            if st.link_model == 'SELECTED' and ob is not None and ob.type == 'MESH':
+                col.prop_search(st, "uv_map", ob.data, "uv_layers", text="UV Map")
+            row = box.row()
+            row.scale_y = 1.5
+            row.enabled = bool(st.link.strip())
+            row.operator(CS2STICKER_OT_import.bl_idname, text="Import from Link", icon='IMPORT')
+        elif st.target == 'PLANE':
             col.prop(st, "plane_size")
         elif st.target == 'WEAPON':
             ob = context.active_object
             col.prop(st, "weapon")
-            key = weapon_for(st, ob) if ob is not None and ob.type == 'MESH' else None
-            n_slots = len(ws.WEAPONS[key][2]) if key else 5
+            col.prop(st, "model")
+            key = weapon_for(st)
+            slot_err = None
+            if key is not None:
+                try:
+                    _n, sel_slot = find_slot(context, key, st.slot, st.model == 'LEGACY')
+                except Exception as e:
+                    slot_err = str(e)
             col.prop(st, "slot")
             if ob is not None and ob.type == 'MESH':
                 col.prop_search(st, "uv_map", ob.data, "uv_layers", text="UV Map")
-            info = col.column(align=True)
-            info.scale_y = 0.8
-            if ob is None or ob.type != 'MESH':
-                info.label(text="Select the weapon object", icon='INFO')
-            elif key is None:
-                info.label(text="Weapon not recognized, choose it above", icon='ERROR')
-            else:
-                info.label(text="%s · %d slots · UV map: %s" % (ws.WEAPONS[key][0], n_slots,
-                                                                 sticker_uv_name(st, ob) or "none"),
-                           icon='CHECKMARK' if st.slot <= n_slots else 'ERROR')
-        col.prop(st, "wear", slider=True)
-        row = box.row()
-        row.scale_y = 1.5
-        row.enabled = sel is not None
-        row.operator(CS2STICKER_OT_import.bl_idname, icon='IMPORT')
+            if slot_err:
+                col.label(text="No sticker slots found in the game files", icon='ERROR')
+        if st.target != 'LINK':
+            col.prop(st, "wear", slider=True)
+            if st.target == 'WEAPON':
+                row = col.row(align=True)
+                row.prop(st, "offset_x")
+                row.prop(st, "offset_y")
+                row.prop(st, "offset_rot")
+            row = box.row()
+            row.scale_y = 1.5
+            row.enabled = sel is not None
+            row.operator(CS2STICKER_OT_import.bl_idname, icon='IMPORT')
 
         opts = layout.row(align=True)
         opts.prop(st, "columns")

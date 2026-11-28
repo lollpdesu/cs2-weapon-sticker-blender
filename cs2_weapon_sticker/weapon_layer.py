@@ -40,7 +40,7 @@ def _new_wrapper_group(mat):
     wg.interface.new_socket("BSDF", in_out='INPUT', socket_type='NodeSocketShader',
                             description="The weapon's own shader; the stickers are drawn over it")
     s = wg.interface.new_socket("Mask", in_out='INPUT', socket_type='NodeSocketColor',
-                                description="Weapon sticker mask (red channel of *_sticker_mask_hd). White = stickers allowed")
+                                description="Weapon sticker mask (red channel of *_sticker_mask_hd, or *_sticker_mask_legacy on legacy models). White = stickers allowed")
     s.default_value = (1.0, 1.0, 1.0, 1.0)
     s = wg.interface.new_socket("NormalMap", in_out='INPUT', socket_type='NodeSocketColor',
                                 description="The weapon's normal map (Image Texture, Non-Color). Stickers follow its bumps")
@@ -145,8 +145,11 @@ def apply_mask(mat, wrapper_node, image, uv_name, weapon_label):
     return True
 
 
-def place_sticker(context, weapon_obj, key, slot, uv_name, sticker, state):
-    """Layer `sticker` into slot `slot` of the weapon's active material. Returns (material, slot node, mask found)."""
+def place_sticker(context, weapon_obj, key, slot, slot_data, uv_name, sticker, state, wear=None, legacy=None,
+                  slot_label=None):
+    """Layer `sticker` into slot `slot` (game slot number) of the weapon's active material, placed with
+    `slot_data` (a slot entry from cs2data.read_sticker_slots).
+    Returns (material, slot node, mask found)."""
     from . import assign_group_images, set_sun_driver, NESTED_TAG
     from . import browser as br
 
@@ -169,7 +172,8 @@ def place_sticker(context, weapon_obj, key, slot, uv_name, sticker, state):
     _sid, display, mat_path, _coll, _typ = sticker
     vmat, images, _aspect = br.load_sticker(context, sticker)
 
-    g = bpy.data.node_groups.new("CS2 Sticker Slot %d | %s" % (slot, display), 'ShaderNodeTree')
+    label = "%s | %s" % (slot_label or "Slot %d" % slot, display)
+    g = bpy.data.node_groups.new("CS2 Sticker " + label, 'ShaderNodeTree')
     nb.build_main_group(g)
     g[NESTED_TAG] = 1
     g["cs2_images"] = images
@@ -181,17 +185,19 @@ def place_sticker(context, weapon_obj, key, slot, uv_name, sticker, state):
     from_alpha = assign_group_images(g, images)
 
     wrapper = ensure_wrapper(mat, uv_name)
-    node = set_slot(wrapper, slot, g, "Slot %d | %s" % (slot, display))
-    br.apply_material_values(node, vmat, images, state.wear)
-    x, y, scale = ws.WEAPONS[key][2][slot - 1]
+    node = set_slot(wrapper, slot, g, label)
+    br.apply_material_values(node, vmat, images, state.wear if wear is None else wear)
+    x, y, scale, rot = slot_data["x"], slot_data["y"], slot_data["scale"], slot_data["rotation"]
     for name, val in (("Wear Mask From Sticker Alpha", from_alpha), ("Layer Over Base Shader", 1.0),
-                      ("UV Placement", 1.0), ("Slot X", x), ("Slot Y", y), ("Slot Scale", scale), ("Rotation", 0.0)):
+                      ("UV Placement", 1.0), ("Slot X", x), ("Slot Y", y), ("Slot Scale", scale), ("Rotation", rot)):
         node.inputs[name].default_value = val
 
     mask_found = False
-    mask_img = br.load_weapon_mask(context, key)
+    if legacy is None:
+        legacy = getattr(state, "model", 'HD') == 'LEGACY'
+    mask_img = br.load_weapon_mask(context, key, legacy)
     if mask_img is not None:
         uv0 = weapon_obj.data.uv_layers[0].name if len(weapon_obj.data.uv_layers) else ""
-        apply_mask(mat, wrapper, mask_img, uv0, ws.WEAPONS[key][0])
+        apply_mask(mat, wrapper, mask_img, uv0, ws.display(key) + (" Legacy" if legacy else ""))
         mask_found = True
     return mat, node, mask_found

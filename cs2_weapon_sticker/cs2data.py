@@ -124,8 +124,9 @@ class Game:
 
 # ====================================================================== resource container
 
-def resource_blocks(data):
-    """Return {block name: (absolute offset, size)} of a compiled Source 2 resource."""
+def resource_block_list(data):
+    """[(block name, absolute offset, size)] of a compiled Source 2 resource, in file order
+    (models hold several blocks with the same name, e.g. one MVTX/MIDX/MDAT set per mesh)."""
     if len(data) < 16:
         raise ValueError("file too small for a compiled resource")
     _file_size, header_version, _res_version = struct.unpack_from("<IHH", data, 0)
@@ -133,12 +134,20 @@ def resource_blocks(data):
         raise ValueError(f"unexpected resource header version {header_version}")
     rel, count = struct.unpack_from("<II", data, 8)
     pos = 8 + rel
-    blocks = {}
+    out = []
     for i in range(count):
         p = pos + i * 12
         name = data[p:p + 4].decode("ascii", "replace")
         off, size = struct.unpack_from("<II", data, p + 4)
-        blocks.setdefault(name, (p + 4 + off, size))
+        out.append((name, p + 4 + off, size))
+    return out
+
+
+def resource_blocks(data):
+    """Return {block name: (absolute offset, size)} of a compiled Source 2 resource (first of each name)."""
+    blocks = {}
+    for name, off, size in resource_block_list(data):
+        blocks.setdefault(name, (off, size))
     return blocks
 
 
@@ -325,7 +334,7 @@ def read_texture(data, max_size=0):
 
 # ====================================================================== sticker index
 
-INDEX_VERSION = 2
+INDEX_VERSION = 3
 
 STICKER_TYPES = [  # (key, label) in display order
     ("PAPER", "Paper"), ("GLITTER", "Glitter"), ("HOLO", "Holo"), ("FOIL", "Foil"), ("GOLD", "Gold"),
@@ -349,6 +358,243 @@ def material_path(material):
     return "stickers/%s.vmat_c" % material
 
 
+# ====================================================================== weapon sticker slots (.vmdl_c)
+
+def parse_kv3_text(text):
+    """Minimal text KeyValues3 reader: objects, arrays, strings (incl. \"\"\"multi-line\"\"\"),
+    numbers, true/false/null and bare identifiers. Comments and the <!-- header --> are skipped."""
+    i, n = 0, len(text)
+
+    def skip():
+        nonlocal i
+        while i < n:
+            c = text[i]
+            if c in " \t\r\n,":
+                i += 1
+            elif text.startswith("//", i):
+                j = text.find("\n", i)
+                i = n if j < 0 else j + 1
+            elif text.startswith("/*", i):
+                j = text.find("*/", i + 2)
+                i = n if j < 0 else j + 2
+            elif text.startswith("<!--", i):
+                j = text.find("-->", i)
+                i = n if j < 0 else j + 3
+            else:
+                return
+
+    def word():
+        nonlocal i
+        j = i
+        while j < n and text[j] not in " \t\r\n,=[]{}":
+            j += 1
+        w = text[i:j]
+        i = j
+        return w
+
+    def value():
+        nonlocal i
+        skip()
+        c = text[i]
+        if c == "{":
+            i += 1
+            obj = {}
+            while True:
+                skip()
+                if text[i] == "}":
+                    i += 1
+                    return obj
+                key = string() if text[i] == '"' else word()
+                skip()
+                if text[i] == "=":
+                    i += 1
+                obj[key] = value()
+        if c == "[":
+            i += 1
+            arr = []
+            while True:
+                skip()
+                if text[i] == "]":
+                    i += 1
+                    return arr
+                arr.append(value())
+        if c == '"':
+            return string()
+        w = word()
+        lw = w.lower()
+        if lw == "true":
+            return True
+        if lw == "false":
+            return False
+        if lw == "null":
+            return None
+        try:
+            return int(w)
+        except ValueError:
+            try:
+                return float(w)
+            except ValueError:
+                return w
+
+    def string():
+        nonlocal i
+        if text.startswith('"""', i):
+            j = text.index('"""', i + 3)
+            s = text[i + 3:j].strip("\r\n")
+            i = j + 3
+            return s
+        j = i + 1
+        out = []
+        while text[j] != '"':
+            if text[j] == "\\" and j + 1 < n:
+                j += 1
+            out.append(text[j])
+            j += 1
+        i = j + 1
+        return "".join(out)
+
+    return value()
+
+
+def weapon_model_path(game, folder):
+    """weapons/models/<folder>/weapon_*.vmdl_c (the weapon itself, not its magazine)."""
+    hits = sorted(k for k, _d in game.vpk.glob("weapons/models/%s/weapon_*.vmdl_c" % folder)
+                  if not k.endswith("_mag.vmdl_c"))
+    return hits[0] if hits else None
+
+
+def read_sticker_slots(data):
+    """Every sticker slot in a compiled weapon model's StickerMarkup (model key values), for the
+    CS2 (body_hd) and the legacy (body_legacy) mesh, including slots marked Deprecated.
+
+    Returns a list of dicts: index (the game's slot number, 0-based), legacy, deprecated, x, y,
+    scale, rotation (degrees), identifier; sorted CS2 first, then legacy, each by index.
+    Offset/Scale are the same numbers the shader placement uses: the sticker center sits at UV
+    (0.5 + x, 0.5 - y) of the weapon's second UV map and covers 1/scale of it. The rotation is
+    stored in turns: csgo_weapon multiplies g_flStickerNRotation by 2*pi (e.g. the Glock's grip
+    slot, 0.063 = 22.7 degrees, the grip angle)."""
+    blocks = resource_blocks(data)
+    off, size = blocks["DATA"]
+    kv = _plain(read_valve_keyvalue3(MemoryBuffer(data[off:off + size])))
+    text = (kv.get("m_modelInfo") or {}).get("m_keyValueText") or ""
+    if "StickerMarkup" not in text:
+        return []
+    keys = parse_kv3_text(text)
+    slots = []
+    for n, s in enumerate(keys.get("StickerMarkup") or []):
+        ox, oy = (list(s.get("Offset") or [0.0, 0.0]) + [0.0, 0.0])[:2]
+        slots.append({
+            "index": int(s.get("Index", n)),
+            "legacy": bool(s.get("LegacyModel", False)),
+            "deprecated": bool(s.get("Deprecated", False)),
+            "x": float(ox), "y": float(oy),
+            "scale": float(s.get("Scale", 1.0)),
+            "rotation": float(s.get("Rotation", 0.0)) * 360.0,
+            "identifier": str(s.get("SpecialIdentifier", "")),
+        })
+    slots.sort(key=lambda d: (d["legacy"], d["index"]))
+    return slots
+
+
+# ====================================================================== weapon meshes (.vmdl_c embedded meshes)
+
+def _half2(raw, n, stride, off):
+    return np.ndarray((n, 2), np.float16, raw, off, (stride, 2)).astype(np.float32)
+
+
+def _decode_uv(raw, n, stride, off, fmt):
+    if fmt == 34:      # DXGI R16G16_FLOAT
+        return _half2(raw, n, stride, off)
+    if fmt == 37:      # DXGI R16G16_SNORM
+        return np.ndarray((n, 2), np.int16, raw, off, (stride, 2)).astype(np.float32) / 32767.0
+    if fmt == 35:      # DXGI R16G16_UNORM
+        return np.ndarray((n, 2), np.uint16, raw, off, (stride, 2)).astype(np.float32) / 65535.0
+    if fmt == 16:      # DXGI R32G32_FLOAT
+        return np.ndarray((n, 2), np.float32, raw, off, (stride, 4)).copy()
+    raise ValueError("unsupported texture coordinate format %d" % fmt)
+
+
+def _decode_tangent_frame(packed):
+    """CS2 CompressedTangentFrame (R32_UINT): normal in 10+10 bit octahedral X/Y (bits 12..31)."""
+    x = ((packed >> 12) & 0x3FF).astype(np.float32) / 1023.0 * 2.0 - 1.0
+    y = ((packed >> 22) & 0x3FF).astype(np.float32) / 1023.0 * 2.0 - 1.0
+    z = 1.0 - np.abs(x) - np.abs(y)
+    comp = np.clip(-z, 0.0, 1.0)
+    x = x + np.where(x >= 0, -comp, comp)
+    y = y + np.where(y >= 0, -comp, comp)
+    n = np.stack([x, y, z], 1)
+    return n / np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-8)
+
+
+def read_model_mesh(data, mesh_name):
+    """One embedded mesh of a compiled model (e.g. a weapon's "body_hd" or "body_legacy").
+
+    Returns dict(positions (N,3) in inches, Source axes; uv0, uv1 (N,2) with V pointing up as in
+    Blender, or None; normals (N,3) or None; triangles (M,3); tri_material (M,) indices into
+    materials [material paths]). Vertex/index buffers are meshopt-compressed (decoded by pylib)."""
+    from .sourceio.pylib import mesh as pm
+    blocks = resource_block_list(data)
+    names = [b[0] for b in blocks]
+    if "CTRL" not in names:
+        raise ValueError("model has no embedded meshes")
+
+    def kv(i):
+        _n, o, s = blocks[i]
+        return _plain(read_valve_keyvalue3(MemoryBuffer(data[o:o + s])))
+
+    ctrl = kv(names.index("CTRL"))
+    meshes = ctrl.get("embedded_meshes") or []
+    m = next((e for e in meshes if e.get("m_Name") == mesh_name), None)
+    if m is None:
+        raise ValueError("mesh '%s' not found (model has: %s)" % (mesh_name, ", ".join(e.get("m_Name", "?") for e in meshes)))
+
+    def buffer(desc, index=False):
+        _n, o, s = blocks[desc["m_nBlockIndex"]]
+        raw, size, count = data[o:o + s], desc["m_nElementSizeInBytes"], desc["m_nElementCount"]
+        if desc.get("m_bCompressedZSTD"):
+            raw = zstd_decompress(raw, size * count)
+        if desc.get("m_bMeshoptCompressed"):
+            raw = (pm.decode_index_buffer if index else pm.decode_vertex_buffer)(bytes(raw), size, count)
+        return bytes(raw), size, count
+
+    vb = m["m_vertexBuffers"][0]
+    raw, stride, n = buffer(vb)
+    out = {"positions": None, "uv0": None, "uv1": None, "normals": None}
+    for f in vb["m_inputLayoutFields"]:
+        sem, si, fmt, off = f["m_pSemanticName"], f["m_nSemanticIndex"], f["m_Format"], f["m_nOffset"]
+        if sem == "POSITION" and fmt == 6:          # R32G32B32_FLOAT
+            out["positions"] = np.ndarray((n, 3), np.float32, raw, off, (stride, 4)).copy()
+        elif sem == "TEXCOORD" and si in (0, 1):
+            uv = _decode_uv(raw, n, stride, off, fmt)
+            uv[:, 1] = 1.0 - uv[:, 1]               # Source V points down
+            out["uv%d" % si] = uv
+        elif sem == "NORMAL" and fmt == 42 and si == 0:  # R32_UINT compressed tangent frame
+            out["normals"] = _decode_tangent_frame(np.ndarray((n,), np.uint32, raw, off, (stride,)).copy())
+    if out["positions"] is None:
+        raise ValueError("mesh '%s' has no float positions" % mesh_name)
+
+    ib = m["m_indexBuffers"][0]
+    rawi, isize, _ic = buffer(ib, index=True)
+    idx = np.frombuffer(rawi, np.uint16 if isize == 2 else np.uint32).astype(np.int64)
+    mdat = kv(m["m_nDataBlock"])
+    tris, mats, mat_names = [], [], []
+    for so in mdat.get("m_sceneObjects") or []:
+        for dc in so.get("m_drawCalls") or []:
+            if dc.get("m_nPrimitiveType", "RENDER_PRIM_TRIANGLES") != "RENDER_PRIM_TRIANGLES":
+                continue
+            seg = idx[dc["m_nStartIndex"]:dc["m_nStartIndex"] + dc["m_nIndexCount"]] + dc.get("m_nBaseVertex", 0)
+            mat = str(dc.get("m_material", "")).split(":", 1)[-1].strip('"')
+            if mat not in mat_names:
+                mat_names.append(mat)
+            t = seg[:len(seg) // 3 * 3].reshape(-1, 3)
+            tris.append(t)
+            mats.append(np.full(len(t), mat_names.index(mat), np.int32))
+    out["triangles"] = np.concatenate(tris) if tris else np.zeros((0, 3), np.int64)
+    out["tri_material"] = np.concatenate(mats) if mats else np.zeros(0, np.int32)
+    out["materials"] = mat_names
+    return out
+
+
 def _pretty_folder(folder):
     import re
     s = re.sub(r"(\d+)", r" \1", folder.replace("_", " ")).strip()
@@ -359,7 +605,9 @@ def build_index(game, progress=None):
     """Read items_game.txt + the English localization and list every applicable sticker.
 
     Returns {"version", "stickers": [[id, name, material, collection_key, type], ...],
-             "collections": [[key, label], ...] (newest first)}.
+             "collections": [[key, label], ...] (newest first),
+             "weapons": {item id: "weapon_..."}, "legacy_paints": [paint kit ids using the legacy model],
+             "paint_names": {paint kit id: English skin name}}.
     """
     def text_of(path):
         raw = game.read(path)
@@ -434,7 +682,23 @@ def build_index(game, progress=None):
 
     stickers.sort(key=lambda s: -s[0])
     collections = sorted(coll_label.items(), key=lambda kv: -coll_newest[kv[0]])
-    return {"version": INDEX_VERSION, "stickers": stickers, "collections": [list(c) for c in collections]}
+
+    # for console (inspect) links: weapon item ids, skins that use the legacy model, skin names
+    weapons = {}
+    for did, item in (items.get("items") or {}).items():
+        if isinstance(item, dict) and str(item.get("name", "")).startswith("weapon_") and did.isdigit():
+            weapons[did] = item["name"]
+    legacy_paints, paint_names = [], {}
+    for pid, kit in (items.get("paint_kits") or {}).items():
+        if not isinstance(kit, dict) or not pid.isdigit():
+            continue
+        if str(kit.get("use_legacy_model", "0")) == "1":
+            legacy_paints.append(int(pid))
+        name = loc(kit.get("description_tag"), "")
+        if name:
+            paint_names[pid] = name
+    return {"version": INDEX_VERSION, "stickers": stickers, "collections": [list(c) for c in collections],
+            "weapons": weapons, "legacy_paints": sorted(legacy_paints), "paint_names": paint_names}
 
 
 # ====================================================================== KeyValues 1 (items_game.txt)
